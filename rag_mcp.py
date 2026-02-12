@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Michael Burgus (https://github.com/NeuralDrifter)
+# Licensed under the MIT License. See LICENSE file for details.
 """
 RAG-Narock MCP Server — local-only, stdio transport.
 Exposes the RAG index as tools for any MCP-compatible LLM CLI.

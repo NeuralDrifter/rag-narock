@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Michael Burgus (https://github.com/NeuralDrifter)
+# Licensed under the MIT License. See LICENSE file for details.
 """
 RAG-Narock — local RAG system for Claude Code.
 - CPU-only embedding model (no GPU interference)

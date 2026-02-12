@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Michael Burgus (https://github.com/NeuralDrifter)
+# Licensed under the MIT License. See LICENSE file for details.
 """
 RAG-Narock Index Editor — TUI (curses) and GUI (tkinter) interfaces
 for managing indexes: view sources, remove sources, delete indexes,
