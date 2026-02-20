@@ -837,7 +837,7 @@ def cmd_index(args):
     dim = embeddings.shape[1]
 
     # Resolve storage backend
-    storage_type = getattr(args, 'storage_backend', None) or rag_settings.get('storage_backend', 'faiss')
+    storage_type = getattr(args, 'storage_backend', None) or rag_settings.get('storage_backend')
     # If appending, use whatever backend already exists
     if args.append:
         storage_type = rag_backends.detect_backend(index_dir)
@@ -1434,6 +1434,8 @@ def cmd_gui(args):
         progress.config(mode='determinate', value=0)
 
         def worker():
+            _saved_neg = None
+            neg = False
             try:
                 import numpy as np
 
@@ -1552,7 +1554,7 @@ def cmd_gui(args):
                     final_chunks = all_new_chunks
 
                 # save via backend
-                storage_type = rag_settings.get('storage_backend', 'faiss')
+                storage_type = rag_settings.get('storage_backend')
                 if os.path.exists(os.path.join(index_dir, "index.faiss")) or os.path.exists(os.path.join(index_dir, "index.db")):
                     storage_type = rag_backends.detect_backend(index_dir)
                 gui_backend = rag_backends.get_backend(index_dir, storage_type)
