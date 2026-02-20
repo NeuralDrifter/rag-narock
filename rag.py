@@ -29,7 +29,21 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-RAG_HOME = os.path.expanduser("~/.local/share/rag")
+# ── Index directory resolution ──
+
+def resolve_index_dir(name):
+    """Given an index name, return its absolute directory path.
+    Checks data_dir first, then external registry, falls back to data_dir/name for creation."""
+    data_dir = rag_settings.get_data_dir()
+    local = os.path.join(data_dir, name)
+    if os.path.exists(os.path.join(local, "meta.json")):
+        return local
+    # Check external registry
+    for ext_path in rag_settings.get_external_indexes():
+        if os.path.basename(ext_path) == name and os.path.exists(os.path.join(ext_path, "meta.json")):
+            return ext_path
+    # Fallback: data_dir/name (for creation or not-yet-existing)
+    return local
 
 # ── File hashing for duplicate detection ──
 
@@ -57,15 +71,24 @@ def save_index_hashes(index_dir: str, hashes: dict):
 # ── Index management helpers (module-level) ──
 
 def get_indexes():
-    """Return list of existing index names."""
-    if not os.path.exists(RAG_HOME):
-        return []
-    return sorted(n for n in os.listdir(RAG_HOME)
-                  if os.path.exists(os.path.join(RAG_HOME, n, "meta.json")))
+    """Return list of existing index names (from data_dir + external registry)."""
+    names = set()
+    data_dir = rag_settings.get_data_dir()
+    if os.path.exists(data_dir):
+        for n in os.listdir(data_dir):
+            if os.path.exists(os.path.join(data_dir, n, "meta.json")):
+                names.add(n)
+    # External indexes (skip if name collision with local — local wins)
+    for ext_path in rag_settings.get_external_indexes():
+        if os.path.exists(os.path.join(ext_path, "meta.json")):
+            ext_name = os.path.basename(ext_path)
+            if ext_name not in names:
+                names.add(ext_name)
+    return sorted(names)
 
 def get_index_info(name):
     """Return meta.json dict for an index, or None."""
-    mp = os.path.join(RAG_HOME, name, "meta.json")
+    mp = os.path.join(resolve_index_dir(name), "meta.json")
     if os.path.exists(mp):
         with open(mp) as f:
             return json.load(f)
@@ -73,7 +96,7 @@ def get_index_info(name):
 
 def get_index_sources(name):
     """Return dict of {source_name: chunk_count} for an index."""
-    index_dir = os.path.join(RAG_HOME, name)
+    index_dir = resolve_index_dir(name)
     backend_type = rag_backends.detect_backend(index_dir)
     backend = rag_backends.get_backend(index_dir, backend_type)
     chunks = backend.get_chunks()
@@ -85,12 +108,12 @@ def get_index_sources(name):
 
 def is_index_locked(name):
     """Check if index has a .locked file."""
-    return os.path.exists(os.path.join(RAG_HOME, name, ".locked"))
+    return os.path.exists(os.path.join(resolve_index_dir(name), ".locked"))
 
 def remove_source_from_index(index_name, source_name):
     """Remove all chunks for a source, rebuild index, update hashes+meta.
     Returns {'removed_chunks', 'remaining_chunks', 'remaining_files'}."""
-    index_dir = os.path.join(RAG_HOME, index_name)
+    index_dir = resolve_index_dir(index_name)
     backend_type = rag_backends.detect_backend(index_dir)
     backend = rag_backends.get_backend(index_dir, backend_type)
 
@@ -114,12 +137,14 @@ def remove_source_from_index(index_name, source_name):
 def delete_index(index_name, force=False):
     """Delete entire index directory. Raises ValueError if locked and not force."""
     import shutil
-    index_dir = os.path.join(RAG_HOME, index_name)
+    index_dir = resolve_index_dir(index_name)
     if not os.path.exists(index_dir):
         raise FileNotFoundError(f"Index '{index_name}' not found")
     if is_index_locked(index_name) and not force:
         raise ValueError(f"Index '{index_name}' is LOCKED. Unlock it first or use force=True.")
     shutil.rmtree(index_dir)
+    # If it was an external index, unregister it
+    rag_settings.remove_external_index(index_dir)
 
 # ── Document extraction (ideas from bulk_convert.py) ──
 
@@ -591,7 +616,7 @@ def resolve_embedding_for_index(index_name):
     """Resolve the correct embedding model+backend for an index.
     Returns {'backend': str, 'model': str, 'warning': str|None, 'api_url': str|None,
              'storage_backend': str}."""
-    index_dir = os.path.join(RAG_HOME, index_name)
+    index_dir = resolve_index_dir(index_name)
     meta = rag_backends.get_index_meta_with_defaults(index_dir)
 
     emb_backend = meta.get('embedding_backend', 'local')
@@ -700,7 +725,7 @@ def cmd_index(args):
         print(f"Not a directory: {source_dir}")
         return 1
 
-    index_dir = os.path.join(RAG_HOME, args.name)
+    index_dir = os.path.join(rag_settings.get_data_dir(), args.name)
 
     # protect locked indexes from accidental overwrite (append is always OK)
     lock_file = os.path.join(index_dir, ".locked")
@@ -896,7 +921,7 @@ def cmd_query(args):
     if args.top_k is None:
         args.top_k = rag_settings.get('top_k')
 
-    index_dir = os.path.join(RAG_HOME, args.name)
+    index_dir = resolve_index_dir(args.name)
 
     # Detect backend and check existence
     backend_type = rag_backends.detect_backend(index_dir)
@@ -959,28 +984,29 @@ def cmd_query(args):
     return 0
 
 def cmd_list(args):
-    if not os.path.exists(RAG_HOME):
+    names = get_indexes()
+    if not names:
         print("No indexes.")
         return 0
-    found = False
-    for name in sorted(os.listdir(RAG_HOME)):
-        mp = os.path.join(RAG_HOME, name, "meta.json")
-        if os.path.exists(mp):
-            found = True
-            locked = os.path.exists(os.path.join(RAG_HOME, name, ".locked"))
-            lock_icon = " [LOCKED]" if locked else ""
-            meta = rag_backends.get_index_meta_with_defaults(os.path.join(RAG_HOME, name))
-            storage = meta.get('storage_backend', 'faiss')
-            emb_backend = meta.get('embedding_backend', 'local')
-            emb_model = meta.get('embedding_model', 'all-MiniLM-L6-v2')
-            print(f"  {name}: {meta['n_chunks']} chunks from {meta['n_files']} files{lock_icon}")
-            print(f"    Source: {meta.get('source_dir', '?')}  |  Storage: {storage}  |  Model: {emb_model} ({emb_backend})")
-    if not found:
-        print("No indexes.")
+    data_dir = rag_settings.get_data_dir()
+    externals = {os.path.abspath(p) for p in rag_settings.get_external_indexes()}
+    for name in names:
+        index_dir = resolve_index_dir(name)
+        locked = os.path.exists(os.path.join(index_dir, ".locked"))
+        lock_icon = " [LOCKED]" if locked else ""
+        is_ext = os.path.abspath(index_dir) in externals
+        ext_tag = " [EXTERNAL]" if is_ext else ""
+        meta = rag_backends.get_index_meta_with_defaults(index_dir)
+        storage = meta.get('storage_backend', 'faiss')
+        emb_backend = meta.get('embedding_backend', 'local')
+        emb_model = meta.get('embedding_model', 'all-MiniLM-L6-v2')
+        print(f"  {name}: {meta['n_chunks']} chunks from {meta['n_files']} files{lock_icon}{ext_tag}")
+        loc = index_dir if is_ext else meta.get('source_dir', '?')
+        print(f"    Source: {loc}  |  Storage: {storage}  |  Model: {emb_model} ({emb_backend})")
     return 0
 
 def cmd_lock(args):
-    index_dir = os.path.join(RAG_HOME, args.name)
+    index_dir = resolve_index_dir(args.name)
     if not os.path.exists(os.path.join(index_dir, "meta.json")):
         print(f"Index '{args.name}' not found")
         return 1
@@ -991,7 +1017,7 @@ def cmd_lock(args):
     return 0
 
 def cmd_unlock(args):
-    index_dir = os.path.join(RAG_HOME, args.name)
+    index_dir = resolve_index_dir(args.name)
     lock_file = os.path.join(index_dir, ".locked")
     if os.path.exists(lock_file):
         os.remove(lock_file)
@@ -1002,7 +1028,7 @@ def cmd_unlock(args):
 
 def cmd_delete(args):
     import shutil
-    index_dir = os.path.join(RAG_HOME, args.name)
+    index_dir = resolve_index_dir(args.name)
     if not os.path.exists(index_dir):
         print(f"Index '{args.name}' not found")
         return 0
@@ -1011,7 +1037,67 @@ def cmd_delete(args):
         print(f"Index '{args.name}' is LOCKED. Use --force to delete.")
         return 1
     shutil.rmtree(index_dir)
+    # If it was an external index, unregister it
+    rag_settings.remove_external_index(index_dir)
     print(f"Deleted index '{args.name}'")
+    return 0
+
+def cmd_add_external(args):
+    """Register an external index that lives outside the data directory."""
+    path = os.path.abspath(os.path.expanduser(args.path))
+    meta_path = os.path.join(path, "meta.json")
+    if not os.path.exists(meta_path):
+        print(f"Not a valid index: {path}")
+        print(f"  (no meta.json found)")
+        return 1
+    name = os.path.basename(path)
+    # Check for name collision with local indexes
+    data_dir = rag_settings.get_data_dir()
+    if os.path.exists(os.path.join(data_dir, name, "meta.json")):
+        print(f"Name collision: '{name}' already exists in {data_dir}")
+        print(f"  Rename the external directory or remove the local index first.")
+        return 1
+    if rag_settings.add_external_index(path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+        print(f"Registered external index '{name}' from {path}")
+        print(f"  {meta.get('n_chunks', '?')} chunks, {meta.get('n_files', '?')} files")
+    else:
+        print(f"Already registered: {path}")
+    return 0
+
+def cmd_move(args):
+    """Move an index into the data directory."""
+    import shutil
+    name = args.name
+    data_dir = rag_settings.get_data_dir()
+    dest = os.path.join(data_dir, name)
+
+    # Find the source index
+    src = resolve_index_dir(name)
+    if not os.path.exists(os.path.join(src, "meta.json")):
+        print(f"Index '{name}' not found")
+        return 1
+
+    # Already in data_dir?
+    if os.path.abspath(src) == os.path.abspath(dest):
+        print(f"Index '{name}' is already in {data_dir}")
+        return 0
+
+    # Check destination doesn't already exist
+    if os.path.exists(dest) and not args.force:
+        print(f"Destination already exists: {dest}")
+        print(f"  Use --force to overwrite.")
+        return 1
+
+    os.makedirs(data_dir, exist_ok=True)
+    if os.path.exists(dest) and args.force:
+        shutil.rmtree(dest)
+
+    shutil.move(src, dest)
+    # Unregister from externals if it was there
+    rag_settings.remove_external_index(src)
+    print(f"Moved '{name}' -> {dest}")
     return 0
 
 def cmd_gui(args):
@@ -1192,7 +1278,7 @@ def cmd_gui(args):
             info_label.config(text="Will create new index")
         else:
             info = get_index_info(name)
-            locked = os.path.exists(os.path.join(RAG_HOME, name, ".locked"))
+            locked = is_index_locked(name)
             if info:
                 lock_str = " [LOCKED]" if locked else ""
                 info_label.config(text=f"{info['n_chunks']} chunks, {info['n_files']} files{lock_str}")
@@ -1220,7 +1306,7 @@ def cmd_gui(args):
             return
 
         def worker():
-            idx_dir = os.path.join(RAG_HOME, name)
+            idx_dir = resolve_index_dir(name)
             hashes = load_index_hashes(idx_dir)
             sources = set()
             cp = os.path.join(idx_dir, "chunks.json")
@@ -1439,7 +1525,7 @@ def cmd_gui(args):
             try:
                 import numpy as np
 
-                index_dir = os.path.join(RAG_HOME, name)
+                index_dir = os.path.join(rag_settings.get_data_dir(), name)
                 os.makedirs(index_dir, exist_ok=True)
 
                 total = len(file_queue)
@@ -1740,6 +1826,13 @@ def main():
     pd.add_argument('name', help='Index name to delete')
     pd.add_argument('--force', action='store_true', help='Delete even if locked')
 
+    pa = sub.add_parser('add-external', help='Register an external index')
+    pa.add_argument('path', help='Absolute path to external index directory')
+
+    pm = sub.add_parser('move', help='Move an index into the data directory')
+    pm.add_argument('name', help='Index name to move')
+    pm.add_argument('--force', action='store_true', help='Overwrite if destination exists')
+
     sub.add_parser('gui', help='Open GUI to add books')
     sub.add_parser('settings', help='Open settings TUI (or --gui for dialog)')
 
@@ -1753,6 +1846,7 @@ def main():
 
     cmds = {'index': cmd_index, 'query': cmd_query, 'list': cmd_list,
             'lock': cmd_lock, 'unlock': cmd_unlock, 'delete': cmd_delete,
+            'add-external': cmd_add_external, 'move': cmd_move,
             'gui': cmd_gui, 'settings': cmd_settings, 'editor': cmd_editor}
     return cmds[args.cmd](args)
 

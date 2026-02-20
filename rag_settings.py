@@ -74,6 +74,7 @@ TABS = [
         ], 200),
     ]),
     ("RAG", [
+        ("data_dir", "Data Directory", "text", None, "~/.local/share/rag"),
         ("storage_backend", "Storage Backend",  "choice", [
             ("faiss",       "FAISS (default)"),
             ("sqlite-vec",  "SQLite-vec"),
@@ -118,6 +119,9 @@ def load():
             for key, val in saved.items():
                 if key in SCHEMA:
                     cfg[key] = val
+            # Preserve external_indexes list (not in schema but managed programmatically)
+            if 'external_indexes' in saved and isinstance(saved['external_indexes'], list):
+                cfg['external_indexes'] = saved['external_indexes']
         except (json.JSONDecodeError, OSError):
             pass
     return cfg
@@ -134,6 +138,44 @@ def get(key):
     """Get a single setting value (loads from disk each time)."""
     cfg = load()
     return cfg.get(key, DEFAULTS.get(key))
+
+
+def get_data_dir():
+    """Return resolved absolute data directory path."""
+    raw = get('data_dir')
+    return os.path.abspath(os.path.expanduser(raw)) if raw else os.path.expanduser("~/.local/share/rag")
+
+
+def get_external_indexes():
+    """Return list of registered external index absolute paths."""
+    cfg = load()
+    return cfg.get('external_indexes', [])
+
+
+def add_external_index(path):
+    """Register an external index path in settings. Returns True if added."""
+    path = os.path.abspath(os.path.expanduser(path))
+    cfg = load()
+    externals = cfg.get('external_indexes', [])
+    if path in externals:
+        return False
+    externals.append(path)
+    cfg['external_indexes'] = externals
+    save(cfg)
+    return True
+
+
+def remove_external_index(path):
+    """Unregister an external index path from settings. Returns True if removed."""
+    path = os.path.abspath(os.path.expanduser(path))
+    cfg = load()
+    externals = cfg.get('external_indexes', [])
+    if path not in externals:
+        return False
+    externals.remove(path)
+    cfg['external_indexes'] = externals
+    save(cfg)
+    return True
 
 
 # ── Curses TUI ──────────────────────────────────────────────────────────────

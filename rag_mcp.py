@@ -13,6 +13,7 @@ import os, sys, json, gc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rag_settings
 import rag_backends
+import rag
 
 # Force CPU-only, offline, no GPU interference — same as rag.py
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -25,8 +26,6 @@ os.environ["TQDM_DISABLE"] = "1"
 
 from mcp.server.fastmcp import FastMCP
 
-RAG_HOME = os.path.expanduser("~/.local/share/rag")
-
 mcp = FastMCP(
     name="RAG-Narock",
     instructions="RAG-Narock — local RAG system for searching indexed technical books. All processing runs on-device, nothing leaves the machine. IMPORTANT: Always call rag_list first to discover available indexes before querying.",
@@ -35,15 +34,12 @@ mcp = FastMCP(
 
 def _list_index_names():
     """Fresh scan of available indexes every time."""
-    if not os.path.exists(RAG_HOME):
-        return []
-    return sorted(n for n in os.listdir(RAG_HOME)
-                  if os.path.exists(os.path.join(RAG_HOME, n, "meta.json")))
+    return rag.get_indexes()
 
 
 def _get_index_info(name):
     """Load metadata for an index (with backward-compatible defaults)."""
-    index_dir = os.path.join(RAG_HOME, name)
+    index_dir = rag.resolve_index_dir(name)
     return rag_backends.get_index_meta_with_defaults(index_dir)
 
 
@@ -55,7 +51,7 @@ def _available_indexes_str():
     lines = []
     for name in names:
         info = _get_index_info(name)
-        locked = os.path.exists(os.path.join(RAG_HOME, name, ".locked"))
+        locked = rag.is_index_locked(name)
         lock_str = " [LOCKED]" if locked else ""
         if info and 'n_chunks' in info:
             storage = info.get('storage_backend', 'faiss')
@@ -86,7 +82,7 @@ def rag_query(query: str, index_name: str = "", top_k: int = 0) -> str:
         hint = f"Index '{index_name}' not found. " if index_name else "No index specified. "
         return f"{hint}Available indexes:\n{_available_indexes_str()}\n\nPass index_name to search a specific index."
 
-    index_dir = os.path.join(RAG_HOME, index_name)
+    index_dir = rag.resolve_index_dir(index_name)
 
     # Detect and get backend
     backend_type = rag_backends.detect_backend(index_dir)
@@ -148,7 +144,7 @@ def rag_sources(index_name: str = "") -> str:
         hint = f"Index '{index_name}' not found. " if index_name else "No index specified. "
         return f"{hint}Available indexes:\n{_available_indexes_str()}"
 
-    index_dir = os.path.join(RAG_HOME, index_name)
+    index_dir = rag.resolve_index_dir(index_name)
     backend_type = rag_backends.detect_backend(index_dir)
     backend = rag_backends.get_backend(index_dir, backend_type)
     hashes = backend.get_hashes()

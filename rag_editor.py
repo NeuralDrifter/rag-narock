@@ -9,8 +9,6 @@ lock/unlock indexes.
 
 import os, sys, json
 
-RAG_HOME = os.path.expanduser("~/.local/share/rag")
-
 # Lazy import from rag.py to avoid circular imports
 def _rag():
     import rag
@@ -54,7 +52,7 @@ class EditorTUI:
         backends = _backends()
         self.indexes = []
         for name in rag.get_indexes():
-            index_dir = os.path.join(RAG_HOME, name)
+            index_dir = rag.resolve_index_dir(name)
             meta = backends.get_index_meta_with_defaults(index_dir)
             locked = rag.is_index_locked(name)
             n_chunks = meta.get('n_chunks', 0)
@@ -260,7 +258,7 @@ class EditorTUI:
         if ch == ord('u') and self.mode == self.MODE_INDEX and n > 0:
             idx = self.indexes[self.cursor]
             if idx['locked']:
-                lock_file = os.path.join(RAG_HOME, idx['name'], ".locked")
+                lock_file = os.path.join(rag.resolve_index_dir(idx['name']), ".locked")
                 if os.path.exists(lock_file):
                     os.remove(lock_file)
                 self._refresh_indexes()
@@ -275,7 +273,7 @@ class EditorTUI:
         if ch == ord('l') and self.mode == self.MODE_INDEX and n > 0:
             idx = self.indexes[self.cursor]
             if not idx['locked']:
-                lock_file = os.path.join(RAG_HOME, idx['name'], ".locked")
+                lock_file = os.path.join(rag.resolve_index_dir(idx['name']), ".locked")
                 with open(lock_file, 'w') as f:
                     f.write("locked\n")
                 self._refresh_indexes()
@@ -693,7 +691,7 @@ class EditorDialog:
         self.index_list.delete(0, 'end')
         self._indexes = []
         for name in rag.get_indexes():
-            index_dir = os.path.join(RAG_HOME, name)
+            index_dir = rag.resolve_index_dir(name)
             meta = backends.get_index_meta_with_defaults(index_dir)
             locked = rag.is_index_locked(name)
             n_chunks = meta.get('n_chunks', 0)
@@ -761,7 +759,7 @@ class EditorDialog:
         idx = self._selected_index()
         if not idx:
             return
-        lock_file = os.path.join(RAG_HOME, idx['name'], ".locked")
+        lock_file = os.path.join(_rag().resolve_index_dir(idx['name']), ".locked")
         if idx['locked']:
             if os.path.exists(lock_file):
                 os.remove(lock_file)

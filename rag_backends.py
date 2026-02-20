@@ -20,8 +20,6 @@ import os, json
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Dict, Optional
 
-RAG_HOME = os.path.expanduser("~/.local/share/rag")
-
 # Fields added to meta.json for new indexes; old indexes get these defaults
 META_DEFAULTS = {
     "storage_backend": "faiss",
