@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets — never commit
+.env
+*.key
+credentials.json
+settings.json
+
+# RAG data (indexes are user-generated, not source)
+rag_data/
+*.faiss
+*.db
+chunks.json
+hashes.json
+integrity.json
