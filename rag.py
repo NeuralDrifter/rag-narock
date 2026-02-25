@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Michael Burgus (https://github.com/NeuralDrifter)
-# Licensed under the MIT License. See LICENSE file for details.
 """
 RAG-Narock — local RAG system for Claude Code.
 - CPU-only embedding model (no GPU interference)
@@ -68,6 +66,125 @@ def save_index_hashes(index_dir: str, hashes: dict):
     backend = rag_backends.get_backend(index_dir, rag_backends.detect_backend(index_dir))
     backend.save_hashes(hashes)
 
+# ── Index integrity verification ──
+
+_INTEGRITY_SKIP = {'.locked', '.integrity', '-wal', '-shm', '-journal'}
+
+def _should_hash_file(filename):
+    """Return True if this file should be included in integrity hashing."""
+    if filename in _INTEGRITY_SKIP:
+        return False
+    for suffix in ('-wal', '-shm', '-journal'):
+        if filename.endswith(suffix):
+            return False
+    return True
+
+def compute_index_integrity(index_dir):
+    """Hash all data files in index_dir. Returns dict with per-file sha256/size/mtime."""
+    files = {}
+    for fname in sorted(os.listdir(index_dir)):
+        if not _should_hash_file(fname):
+            continue
+        fpath = os.path.join(index_dir, fname)
+        if not os.path.isfile(fpath):
+            continue
+        st = os.stat(fpath)
+        files[fname] = {
+            'sha256': file_hash(fpath),
+            'size': st.st_size,
+            'mtime': st.st_mtime,
+        }
+    return {'version': 1, 'files': files, 'suppressed': False}
+
+def save_index_integrity(index_dir):
+    """Compute and write .integrity file with suppressed=false."""
+    integrity = compute_index_integrity(index_dir)
+    with open(os.path.join(index_dir, '.integrity'), 'w') as f:
+        json.dump(integrity, f, indent=2)
+
+def check_index_integrity(index_dir, fast=True):
+    """Check index integrity. Returns dict with 'ok', 'suppressed', 'untracked', 'details'.
+    fast=True uses stat check (size+mtime), fast=False does full SHA-256.
+    Missing .integrity = untracked (never verified), treated as not ok."""
+    ipath = os.path.join(index_dir, '.integrity')
+    if not os.path.exists(ipath):
+        if os.path.exists(os.path.join(index_dir, 'meta.json')):
+            return {'ok': False, 'suppressed': False, 'untracked': True, 'details': ['no .integrity file — index has never been verified']}
+        return {'ok': True, 'suppressed': False, 'untracked': False, 'details': []}
+
+    with open(ipath) as f:
+        stored = json.load(f)
+
+    if stored.get('suppressed', False):
+        return {'ok': True, 'suppressed': True, 'untracked': False, 'details': []}
+
+    details = []
+    for fname, info in stored.get('files', {}).items():
+        fpath = os.path.join(index_dir, fname)
+        if not os.path.exists(fpath):
+            details.append(f"{fname}: MISSING")
+            continue
+        st = os.stat(fpath)
+        if fast:
+            if st.st_size != info['size'] or abs(st.st_mtime - info['mtime']) > 0.01:
+                details.append(f"{fname}: size/mtime changed")
+        else:
+            actual_hash = file_hash(fpath)
+            if actual_hash != info['sha256']:
+                details.append(f"{fname}: SHA-256 mismatch")
+
+    return {'ok': len(details) == 0, 'suppressed': False, 'untracked': False, 'details': details}
+
+def suppress_index_integrity(index_dir):
+    """Set suppressed=true in .integrity file."""
+    ipath = os.path.join(index_dir, '.integrity')
+    if not os.path.exists(ipath):
+        return
+    with open(ipath) as f:
+        data = json.load(f)
+    data['suppressed'] = True
+    with open(ipath, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def _cli_integrity_gate(name, index_dir):
+    """CLI interactive warning handler. Returns True if safe to proceed."""
+    result = check_index_integrity(index_dir)
+    if result['ok']:
+        return True
+
+    if result.get('untracked'):
+        print(f"\n*** UNVERIFIED INDEX '{name}' ***", file=sys.stderr)
+        print(f"  This index was created before integrity tracking was enabled.", file=sys.stderr)
+        print(f"  Open the editor (rag.py editor) and press 'h' to hash it,", file=sys.stderr)
+        print(f"  or run: rag.py integrity --rehash --name {name}", file=sys.stderr)
+    else:
+        print(f"\n*** INTEGRITY WARNING for '{name}' ***", file=sys.stderr)
+        for d in result['details']:
+            print(f"  - {d}", file=sys.stderr)
+        print(f"\nIndex data may have been modified outside RAG-Narock.", file=sys.stderr)
+
+    if not sys.stdin.isatty():
+        print("Aborting. Fix via editor (rag.py editor) or CLI (rag.py integrity --rehash).", file=sys.stderr)
+        return False
+
+    while True:
+        try:
+            choice = input("\nProceed? [y/N/suppress/delete] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if choice in ('', 'n', 'no'):
+            return False
+        if choice in ('y', 'yes'):
+            return True
+        if choice == 'suppress':
+            suppress_index_integrity(index_dir)
+            print("Warning suppressed. Will re-verify on next index write.", file=sys.stderr)
+            return True
+        if choice == 'delete':
+            print(f"To delete this index, run: rag.py delete {name}", file=sys.stderr)
+            return False
+        print("Invalid choice. Enter y, n, suppress, or delete.", file=sys.stderr)
+
 # ── Index management helpers (module-level) ──
 
 def get_indexes():
@@ -132,6 +249,7 @@ def remove_source_from_index(index_name, source_name):
         with open(mp, 'w') as f:
             json.dump(meta, f, indent=2)
 
+    save_index_integrity(index_dir)
     return result
 
 def delete_index(index_name, force=False):
@@ -184,17 +302,72 @@ def reset_ocr_lang():
     global _ocr_lang
     _ocr_lang = rag_settings.get('ocr_lang')
 
-def ocr_image(img) -> str:
-    """OCR a PIL Image using Tesseract. Uses module-level _ocr_lang setting.
-    If ocr_negative is enabled in settings, inverts the image first."""
+_ocr_disabled_override = None  # None = use settings, True/False = CLI override
+
+def ocr_disabled() -> bool:
+    """Check if OCR is globally disabled via settings or CLI override."""
+    if _ocr_disabled_override is not None:
+        return _ocr_disabled_override
+    return rag_settings.get('disable_ocr')
+
+_split_spreads_override = None  # None = use settings, True/False = CLI override
+
+def split_spreads_enabled() -> bool:
+    """Check if spread splitting is enabled via settings or CLI override."""
+    if _split_spreads_override is not None:
+        return _split_spreads_override
+    return rag_settings.get('split_spreads')
+
+def _find_gutter(img, margin_frac=0.15):
+    """Find the vertical gutter in a spread scan.
+    Looks in the central 30% of the image for the column with the least ink.
+    Returns the x-coordinate to split at."""
+    import numpy as np
+    gray = np.array(img.convert('L'))
+    h, w = gray.shape
+    left = int(w * (0.5 - margin_frac))
+    right = int(w * (0.5 + margin_frac))
+    strip = gray[:, left:right]
+    # Sum pixel values per column — highest sum = lightest = least ink
+    col_sums = strip.sum(axis=0)
+    gutter_offset = int(np.argmax(col_sums))
+    return left + gutter_offset
+
+def _split_spread(img):
+    """Split a spread image into [left_page, right_page].
+    Only splits if width > 1.3x height (landscape/spread aspect ratio).
+    Returns a list of 1 or 2 images."""
+    w, h = img.size
+    if w <= h * 1.3:
+        return [img]
+    gutter_x = _find_gutter(img)
+    left = img.crop((0, 0, gutter_x, h))
+    right = img.crop((gutter_x, 0, w, h))
+    return [left, right]
+
+def _ocr_single(img) -> str:
+    """OCR a single page image (no splitting). Handles negative inversion."""
     import pytesseract
     from PIL import ImageOps
     if rag_settings.get('ocr_negative'):
         img = ImageOps.invert(img.convert('RGB'))
     return pytesseract.image_to_string(img, lang=_ocr_lang)
 
+def ocr_image(img) -> str:
+    """OCR a PIL Image using Tesseract. Uses module-level _ocr_lang setting.
+    If split_spreads is enabled, detects and splits side-by-side page scans
+    before OCR. Each half is OCR'd independently for correct reading order."""
+    if split_spreads_enabled():
+        pages = _split_spread(img)
+        if len(pages) == 2:
+            return _ocr_single(pages[0]) + "\n" + _ocr_single(pages[1])
+    return _ocr_single(img)
+
 def extract_pdf_ocr(path: str):
     """OCR a PDF by rendering each page to an image. Returns (text, True) or (None, True)."""
+    if ocr_disabled():
+        print(f"    OCR disabled, skipping", file=sys.stderr)
+        return (None, False)
     import fitz
     from PIL import Image
     import io
@@ -224,6 +397,9 @@ def extract_pdf(path: str):
     if text.strip():
         return (sanitize_text(text), False)
     # No embedded text — automatic OCR fallback
+    if ocr_disabled():
+        print(f"    No text layer, OCR disabled — skipping", file=sys.stderr)
+        return (None, False)
     print(f"    No text layer, trying OCR...", file=sys.stderr)
     return extract_pdf_ocr(path)
 
@@ -233,6 +409,8 @@ def extract_pdf_force_ocr(path: str):
 
 def extract_image(path: str):
     """OCR a single image file. Returns (text, True) or (None, True)."""
+    if ocr_disabled():
+        return (None, False)
     from PIL import Image
     img = Image.open(path)
     text = ocr_image(img)
@@ -240,6 +418,8 @@ def extract_image(path: str):
 
 def extract_multipage_tiff(path: str):
     """OCR a multi-page TIFF by iterating all frames. Returns (text, True)."""
+    if ocr_disabled():
+        return (None, False)
     from PIL import Image
     parts = []
     img = Image.open(path)
@@ -269,6 +449,9 @@ def extract_djvu(path: str):
         pass
 
     # No text layer — OCR each page via ddjvu → TIFF → Tesseract
+    if ocr_disabled():
+        print(f"    No text layer in DjVu, OCR disabled — skipping", file=sys.stderr)
+        return (None, False)
     print(f"    No text layer in DjVu, OCR via ddjvu...", file=sys.stderr)
     tmp_dir = tempfile.mkdtemp(prefix='rag_djvu_')
     try:
@@ -299,7 +482,10 @@ def extract_djvu(path: str):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def extract_epub_ocr(book):
-    """OCR an image-only EPUB. Handles SVGs with base64 rasters + direct raster images."""
+    """OCR an image-only EPUB. Handles SVGs with base64 rasters + direct raster images.
+    Returns (None, False) if OCR is disabled."""
+    if ocr_disabled():
+        return (None, False)
     import ebooklib
     from PIL import Image
     import io, base64
@@ -371,7 +557,10 @@ def extract_epub(path: str):
             parts.append(sanitize_text(t))
     if parts:
         return ("\n\n".join(parts), False)
-    # No text — try OCR on embedded images
+    # No text — try OCR on embedded images (unless OCR is disabled)
+    if ocr_disabled():
+        print(f"    No text layer in EPUB, OCR disabled — skipping", file=sys.stderr)
+        return (None, False)
     print(f"    No text layer in EPUB, trying OCR on images...", file=sys.stderr)
     return extract_epub_ocr(book)
 
@@ -472,23 +661,249 @@ def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> List[s
     min_len = rag_settings.get('min_chunk_length')
     return [c for c in final if len(c) > min_len]
 
-# ── Embedding (lazy load, CPU-only) ──
+# ── Code indexing support ──
+
+CODE_EXTENSIONS = {
+    '.py', '.pyx', '.pyi',
+    '.js', '.jsx', '.mjs', '.cjs',
+    '.ts', '.tsx', '.mts',
+    '.c', '.h',
+    '.cpp', '.hpp', '.cc', '.hh', '.cxx',
+    '.rs',
+    '.go',
+    '.java',
+    '.rb',
+    '.ex', '.exs',
+    '.zig',
+    '.lua',
+    '.hs',
+    '.jl',
+    '.pl', '.pm',
+    '.r', '.R',
+    '.swift',
+    '.kt', '.kts',
+    '.scala',
+    '.cs',
+    '.fs', '.fsx',
+    '.clj', '.cljs',
+    '.erl', '.hrl',
+    '.ml', '.mli',
+    '.nim',
+    '.v', '.sv',
+    '.sh', '.bash', '.zsh', '.fish',
+    '.ps1',
+    '.sql',
+    '.mojo',
+    '.toml', '.yaml', '.yml', '.json',
+    '.xml',
+    '.ini', '.cfg', '.conf',
+    '.html', '.htm', '.css', '.scss', '.sass', '.less',
+    '.vue', '.svelte',
+    '.md', '.rst', '.txt',
+    '.cmake', '.mk',
+}
+
+# Exact filenames to include (no extension match needed)
+CODE_FILENAMES = {
+    'Makefile', 'Dockerfile', 'Containerfile',
+    'CMakeLists.txt', 'Cargo.toml', 'go.mod', 'package.json',
+    'pyproject.toml', 'setup.py', 'setup.cfg',
+    '.env.example',
+}
+
+SKIP_DIRS = {
+    '.git', 'node_modules', '__pycache__', 'build', 'dist', 'vendor',
+    '.venv', 'venv', '.tox', 'target', '.next', 'coverage',
+    '.mypy_cache', '.pytest_cache', '.ruff_cache', '.cache',
+}
+
+LANG_MAP = {
+    '.py': 'python', '.pyx': 'python', '.pyi': 'python',
+    '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
+    '.ts': 'typescript', '.tsx': 'typescript', '.mts': 'typescript',
+    '.c': 'c', '.h': 'c',
+    '.cpp': 'cpp', '.hpp': 'cpp', '.cc': 'cpp', '.hh': 'cpp', '.cxx': 'cpp',
+    '.rs': 'rust', '.go': 'go', '.java': 'java', '.rb': 'ruby',
+    '.ex': 'elixir', '.exs': 'elixir', '.zig': 'zig', '.lua': 'lua',
+    '.hs': 'haskell', '.jl': 'julia', '.pl': 'perl', '.pm': 'perl',
+    '.r': 'r', '.R': 'r', '.swift': 'swift', '.kt': 'kotlin', '.kts': 'kotlin',
+    '.scala': 'scala', '.cs': 'csharp', '.fs': 'fsharp', '.fsx': 'fsharp',
+    '.clj': 'clojure', '.cljs': 'clojure', '.erl': 'erlang', '.hrl': 'erlang',
+    '.ml': 'ocaml', '.mli': 'ocaml', '.nim': 'nim',
+    '.sh': 'bash', '.bash': 'bash', '.zsh': 'zsh', '.fish': 'fish',
+    '.ps1': 'powershell', '.sql': 'sql', '.mojo': 'mojo',
+    '.html': 'html', '.htm': 'html', '.css': 'css',
+    '.scss': 'scss', '.sass': 'sass', '.less': 'less',
+    '.vue': 'vue', '.svelte': 'svelte',
+    '.toml': 'toml', '.yaml': 'yaml', '.yml': 'yaml', '.json': 'json',
+    '.xml': 'xml', '.md': 'markdown', '.rst': 'rst', '.txt': 'text',
+}
+
+# Regex patterns for function/class boundaries per language family
+_SPLIT_PATTERNS = {
+    'python': re.compile(r'^(?:def |class |async def )', re.MULTILINE),
+    'javascript': re.compile(r'^(?:function |class |export |const \w+ = |let \w+ = |var \w+ = )', re.MULTILINE),
+    'typescript': re.compile(r'^(?:function |class |export |const \w+ = |interface |type |enum )', re.MULTILINE),
+    'c': re.compile(r'^(?:\w[\w\s*&]*\w+\s*\(|struct |enum |typedef )', re.MULTILINE),
+    'cpp': re.compile(r'^(?:\w[\w\s*&:<>]*\w+\s*\(|struct |enum |class |namespace |template)', re.MULTILINE),
+    'rust': re.compile(r'^(?:fn |pub fn |struct |enum |impl |trait |mod |pub struct |pub enum )', re.MULTILINE),
+    'go': re.compile(r'^(?:func |type |var |const )', re.MULTILINE),
+    'java': re.compile(r'^(?:\s*(?:public |private |protected |static )*(?:class |interface |enum |void |int |String |boolean |\w+ ))', re.MULTILINE),
+}
+
+def _detect_language(filepath: str) -> str:
+    """Detect language from file extension. Returns language name or empty string."""
+    ext = os.path.splitext(filepath)[1]
+    return LANG_MAP.get(ext, '')
+
+def _get_import_block(text: str, language: str) -> str:
+    """Extract the import/include block from the top of a file."""
+    lines = text.split('\n')
+    import_lines = []
+    patterns = {
+        'python': re.compile(r'^(import |from |#)'),
+        'javascript': re.compile(r'^(import |const .* = require|//|/\*)'),
+        'typescript': re.compile(r'^(import |const .* = require|//|/\*)'),
+        'c': re.compile(r'^(#include |#define |#pragma |//)'),
+        'cpp': re.compile(r'^(#include |#define |#pragma |using |//|namespace)'),
+        'rust': re.compile(r'^(use |mod |extern |//)'),
+        'go': re.compile(r'^(import |package |//)'),
+        'java': re.compile(r'^(import |package |//)'),
+    }
+    pat = patterns.get(language)
+    if not pat:
+        return ''
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            import_lines.append('')
+            continue
+        if pat.match(stripped):
+            import_lines.append(line)
+        else:
+            break
+    # Remove trailing empty lines
+    while import_lines and not import_lines[-1].strip():
+        import_lines.pop()
+    return '\n'.join(import_lines)
+
+def chunk_code(text: str, filepath: str, chunk_size: int = None,
+               overlap: int = None) -> List[str]:
+    """Split code into chunks using language-aware boundaries.
+    Each chunk gets a file path header and import context."""
+    if chunk_size is None:
+        chunk_size = rag_settings.get('code_chunk_size')
+    if overlap is None:
+        overlap = rag_settings.get('code_overlap')
+
+    language = _detect_language(filepath)
+    header = f"# file: {filepath}\n\n"
+    import_block = _get_import_block(text, language)
+    prefix = header
+    if import_block:
+        prefix += import_block + "\n\n"
+
+    # Small files: single chunk (no prefix needed since it's the whole file)
+    if len(text) <= chunk_size:
+        return [header + text]
+
+    # Try language-aware splitting
+    split_pat = _SPLIT_PATTERNS.get(language)
+    if split_pat:
+        # Find all split points
+        matches = list(split_pat.finditer(text))
+        if len(matches) > 1:
+            chunks = []
+            for mi, m in enumerate(matches):
+                start = m.start()
+                end = matches[mi + 1].start() if mi + 1 < len(matches) else len(text)
+                segment = text[start:end].rstrip()
+                if not segment.strip():
+                    continue
+                # If segment is too large, fall through to paragraph splitting
+                if len(segment) > chunk_size * 2:
+                    sub_chunks = chunk_text(segment, chunk_size, overlap)
+                    for sc in sub_chunks:
+                        chunks.append(prefix + sc)
+                else:
+                    chunks.append(prefix + segment)
+
+            # Merge tiny adjacent chunks
+            merged = []
+            buf = ""
+            for c in chunks:
+                body = c[len(prefix):]  # strip prefix for size check
+                if buf and len(buf) + len(body) + 2 <= chunk_size:
+                    buf += "\n\n" + body
+                else:
+                    if buf:
+                        merged.append(prefix + buf)
+                    buf = body
+            if buf:
+                merged.append(prefix + buf)
+
+            if merged:
+                min_len = rag_settings.get('min_chunk_length')
+                return [c for c in merged if len(c) > min_len]
+
+    # Fallback: paragraph-based splitting (same as book chunking)
+    raw_chunks = chunk_text(text, chunk_size, overlap)
+    return [prefix + c for c in raw_chunks]
+
+
+# ── Embedding (lazy load) ──
 
 _model = None
 
 _model_name = None  # tracks which model is currently loaded
+_model_device = None  # tracks which device model is on
 
-def _get_model(model_name=None):
-    global _model, _model_name
+def _detect_best_device():
+    """Auto-detect best available device: xpu > cuda > cpu.
+    Temporarily lifts the CPU-forcing env vars set at module level."""
+    saved = {}
+    for key in ('CUDA_VISIBLE_DEVICES', 'ONEAPI_DEVICE_SELECTOR', 'SYCL_DEVICE_FILTER'):
+        if key in os.environ:
+            saved[key] = os.environ.pop(key)
+    try:
+        import torch
+        # torch caches device state, need to re-probe after env change
+        if hasattr(torch, 'xpu') and torch.xpu.is_available() and torch.xpu.device_count() > 0:
+            return 'xpu'
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            return 'cuda'
+    except Exception:
+        pass
+    finally:
+        # Restore env vars (will be cleared again if GPU is selected)
+        os.environ.update(saved)
+    return 'cpu'
+
+def _prepare_env_for_device(device):
+    """Adjust environment variables for the target device."""
+    if device == 'cpu':
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ["ONEAPI_DEVICE_SELECTOR"] = "opencl:cpu"
+    elif device == 'xpu':
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        os.environ.pop("ONEAPI_DEVICE_SELECTOR", None)
+        os.environ.pop("SYCL_DEVICE_FILTER", None)
+    elif device == 'cuda':
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        os.environ["ONEAPI_DEVICE_SELECTOR"] = "opencl:cpu"
+
+def _get_model(model_name=None, device='cpu'):
+    global _model, _model_name, _model_device
     if model_name is None:
         model_name = rag_settings.get('embedding_model')
 
-    # If a different model is requested, unload current one
-    if _model is not None and _model_name != model_name:
-        print(f"Switching model: '{_model_name}' -> '{model_name}'", file=sys.stderr)
+    # If a different model or device is requested, unload current one
+    if _model is not None and (_model_name != model_name or _model_device != device):
+        print(f"Switching model: '{_model_name}' ({_model_device}) -> '{model_name}' ({device})", file=sys.stderr)
         del _model
         _model = None
         _model_name = None
+        _model_device = None
         gc.collect()
 
     if _model is None:
@@ -500,13 +915,19 @@ def _get_model(model_name=None):
         logging.getLogger('huggingface_hub').setLevel(logging.ERROR)
         # Suppress all progress bars and load reports
         os.environ["TQDM_DISABLE"] = "1"
+
+        _prepare_env_for_device(device)
+
         from sentence_transformers import SentenceTransformer
         import torch
-        torch.set_num_threads(min(8, os.cpu_count() or 4))
+        if device == 'cpu':
+            torch.set_num_threads(min(8, os.cpu_count() or 4))
+
+        dev_label = device.upper()
 
         # Try loading from local cache first (no network)
         try:
-            print(f"Loading embedding model '{model_name}' (CPU-only, local cache)...", file=sys.stderr)
+            print(f"Loading embedding model '{model_name}' ({dev_label}, local cache)...", file=sys.stderr)
             # Suppress the BertModel LOAD REPORT (writes to C-level fd, not Python streams)
             _saved_stdout = os.dup(1)
             _saved_stderr = os.dup(2)
@@ -514,7 +935,7 @@ def _get_model(model_name=None):
             os.dup2(_devnull_fd, 1)
             os.dup2(_devnull_fd, 2)
             try:
-                _model = SentenceTransformer(model_name, device='cpu')
+                _model = SentenceTransformer(model_name, device=device)
             finally:
                 os.dup2(_saved_stdout, 1)
                 os.dup2(_saved_stderr, 2)
@@ -522,31 +943,38 @@ def _get_model(model_name=None):
                 os.close(_saved_stderr)
                 os.close(_devnull_fd)
             _model_name = model_name
-            print("Model ready (offline).", file=sys.stderr)
+            _model_device = device
+            print(f"Model ready on {dev_label} (offline).", file=sys.stderr)
         except Exception:
             # Model not cached — allow one-time download
             print(f"Model '{model_name}' not cached locally. Downloading...", file=sys.stderr)
             os.environ.pop("HF_HUB_OFFLINE", None)
             os.environ.pop("TRANSFORMERS_OFFLINE", None)
             os.environ.pop("TQDM_DISABLE", None)  # show download progress
-            _model = SentenceTransformer(model_name, device='cpu')
+            _model = SentenceTransformer(model_name, device=device)
             _model_name = model_name
+            _model_device = device
             os.environ["TQDM_DISABLE"] = "1"
             # Re-enable offline mode for future loads
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            print("Model downloaded and cached. Future loads will be offline.", file=sys.stderr)
+            print(f"Model downloaded and cached on {dev_label}. Future loads will be offline.", file=sys.stderr)
     return _model
 
 def _unload_model():
-    global _model
+    global _model, _model_device
     # API backends have no local model to unload
     if rag_settings.get('embedding_backend') in ('ollama', 'lmstudio'):
         return
     if _model is not None:
+        was_gpu = _model_device and _model_device != 'cpu'
         del _model
         _model = None
+        _model_device = None
         gc.collect()
+        # Restore CPU env vars after GPU use
+        if was_gpu:
+            _prepare_env_for_device('cpu')
 
 def embed_texts_api(texts: List[str], backend: str, override_model=None, override_url=None):
     """Embed texts via Ollama or LM Studio OpenAI-compatible API.
@@ -597,13 +1025,14 @@ def embed_texts_api(texts: List[str], backend: str, override_model=None, overrid
     return embs
 
 def embed_texts(texts: List[str], batch_size: int = 64,
-               override_backend=None, override_model=None, override_url=None):
+               override_backend=None, override_model=None, override_url=None,
+               device: str = 'cpu'):
     import numpy as np
     backend = override_backend or rag_settings.get('embedding_backend')
     if backend in ('ollama', 'lmstudio'):
         return embed_texts_api(texts, backend, override_model=override_model, override_url=override_url)
-    # Local CPU path
-    model = _get_model(model_name=override_model)
+    # Local path (CPU or GPU)
+    model = _get_model(model_name=override_model, device=device)
     embs = model.encode(texts, batch_size=batch_size, show_progress_bar=len(texts) > 100,
                         normalize_embeddings=True)
     return np.array(embs, dtype=np.float32)
@@ -626,7 +1055,7 @@ def resolve_embedding_for_index(index_name):
     warning = None
 
     # Check storage backend availability
-    if storage == 'sqlite-vec':
+    if storage in ('sqlite-vec', 'sqlite-doc'):
         try:
             import sqlite_vec
         except ImportError:
@@ -634,7 +1063,7 @@ def resolve_embedding_for_index(index_name):
                 'backend': emb_backend, 'model': emb_model, 'api_url': None,
                 'storage_backend': storage,
                 'warning': (
-                    f"ERROR: Index '{index_name}' uses SQLite-vec for storage, but sqlite-vec is not\n"
+                    f"ERROR: Index '{index_name}' uses {storage} for storage, but sqlite-vec is not\n"
                     f"installed in your Python environment.\n\n"
                     f"To fix this:\n"
                     f"  1. Install it:  pip install sqlite-vec\n"
@@ -797,9 +1226,22 @@ def cmd_index(args):
     if args.overlap is None:
         args.overlap = rag_settings.get('overlap')
 
+    # Apply --no-ocr: runtime override so all extractors see it
+    global _ocr_disabled_override
+    no_ocr = args.no_ocr if args.no_ocr is not None else rag_settings.get('disable_ocr')
+    if no_ocr:
+        _ocr_disabled_override = True
+
     force_ocr = args.ocr if args.ocr is not None else rag_settings.get('force_ocr')
+    if no_ocr:
+        force_ocr = False  # --no-ocr overrides --ocr
     ocr_lang = args.ocr_lang if args.ocr_lang is not None else rag_settings.get('ocr_lang')
     ocr_neg = args.ocr_negative if args.ocr_negative is not None else rag_settings.get('ocr_negative')
+    # Spread splitting
+    global _split_spreads_override
+    split_sp = args.split_spreads if args.split_spreads is not None else rag_settings.get('split_spreads')
+    if split_sp:
+        _split_spreads_override = True
     if ocr_lang != rag_settings.get('ocr_lang'):
         if not set_ocr_lang(ocr_lang):
             return 1
@@ -809,10 +1251,14 @@ def cmd_index(args):
         cfg['ocr_negative'] = ocr_neg
         rag_settings.save(cfg)
     opts = []
-    if force_ocr:
+    if no_ocr:
+        opts.append("OCR disabled")
+    elif force_ocr:
         opts.append("force-OCR")
-    if ocr_neg:
+    if ocr_neg and not no_ocr:
         opts.append("negative")
+    if split_sp:
+        opts.append("split-spreads")
     if opts:
         print(f"OCR mode: {', '.join(opts)}")
 
@@ -820,6 +1266,7 @@ def cmd_index(args):
 
     # extract + chunk
     all_chunks = []
+    all_documents = []  # for sqlite-doc backend
     skipped_files = []
     file_hashes_map = {}
     for i, fpath in enumerate(deduped_files):
@@ -830,16 +1277,25 @@ def cmd_index(args):
             skipped_files.append(fname)
             print(" - SKIP (no text)")
             continue
+        rel_path = os.path.relpath(fpath, source_dir)
         chunks = chunk_text(text, args.chunk_size, args.overlap)
         ocr_tag = " [OCR]" if is_ocr else ""
         for ci, chunk in enumerate(chunks):
             all_chunks.append({
                 'text': chunk,
-                'source': os.path.relpath(fpath, source_dir),
+                'source': rel_path,
                 'chunk': ci,
                 'of': len(chunks),
                 'ocr': is_ocr,
             })
+        # Collect full document for sqlite-doc backend
+        all_documents.append({
+            'source': rel_path,
+            'full_text': text,
+            'doc_type': 'book',
+            'language': None,
+            'ocr': is_ocr,
+        })
         file_hashes_map[file_hash(fpath)] = fname
         print(f" - {len(chunks)} chunks{ocr_tag}")
 
@@ -852,11 +1308,17 @@ def cmd_index(args):
         print("No content extracted!")
         return 1
 
-    print(f"\nNew: {len(all_chunks)} chunks. Embedding...")
+    # Resolve embedding device
+    use_gpu = args.gpu if args.gpu is not None else rag_settings.get('gpu_indexing')
+    device = _detect_best_device() if use_gpu else 'cpu'
+    if use_gpu and device == 'cpu':
+        print("WARNING: --gpu requested but no GPU detected, falling back to CPU", file=sys.stderr)
+
+    print(f"\nNew: {len(all_chunks)} chunks. Embedding ({device.upper()})...")
 
     # embed new chunks
     texts = [c['text'] for c in all_chunks]
-    embeddings = embed_texts(texts)
+    embeddings = embed_texts(texts, device=device)
     _unload_model()
 
     dim = embeddings.shape[1]
@@ -873,12 +1335,19 @@ def cmd_index(args):
 
     # append or full write
     existing_chunks = []
+    docs_arg = all_documents if storage_type == 'sqlite-doc' else None
     if args.append and backend.exists():
         existing_chunks = backend.get_chunks()
-        backend.append(all_chunks, embeddings, file_hashes_map)
+        if storage_type == 'sqlite-doc':
+            backend.append(all_chunks, embeddings, file_hashes_map, documents=docs_arg)
+        else:
+            backend.append(all_chunks, embeddings, file_hashes_map)
         all_chunks = existing_chunks + all_chunks
     else:
-        backend.save(all_chunks, embeddings, all_hashes)
+        if storage_type == 'sqlite-doc':
+            backend.save(all_chunks, embeddings, all_hashes, documents=docs_arg)
+        else:
+            backend.save(all_chunks, embeddings, all_hashes)
 
     # metadata last — derived from actual saved data
     n_sources = len(set(c['source'] for c in all_chunks))
@@ -897,6 +1366,7 @@ def cmd_index(args):
     }
     with open(os.path.join(index_dir, "meta.json"), 'w') as f:
         json.dump(meta, f, indent=2)
+    save_index_integrity(index_dir)
 
     # Auto-lock after successful index
     lock_file = os.path.join(index_dir, ".locked")
@@ -904,7 +1374,9 @@ def cmd_index(args):
         with open(lock_file, 'w') as f:
             f.write("locked\n")
 
-    # Restore negative setting if we overrode it
+    # Restore settings overrides
+    _ocr_disabled_override = None
+    _split_spreads_override = None
     if ocr_neg != rag_settings.get('ocr_negative'):
         cfg = rag_settings.load()
         cfg['ocr_negative'] = not ocr_neg
@@ -921,7 +1393,12 @@ def cmd_query(args):
     if args.top_k is None:
         args.top_k = rag_settings.get('top_k')
 
+    context = getattr(args, 'context', 0) or 0
+    source_filter = getattr(args, 'source', '') or ''
+
     index_dir = resolve_index_dir(args.name)
+    if not _cli_integrity_gate(args.name, index_dir):
+        return 1
 
     # Detect backend and check existence
     backend_type = rag_backends.detect_backend(index_dir)
@@ -930,8 +1407,6 @@ def cmd_query(args):
     if not backend.exists():
         print(f"Index '{args.name}' not found. Run: rag.py index /path --name {args.name}")
         return 1
-
-    chunks = backend.get_chunks()
 
     # Auto-resolve embedding model for this index
     resolved = resolve_embedding_for_index(args.name)
@@ -948,38 +1423,88 @@ def cmd_query(args):
                         override_url=resolved['api_url'])
     _unload_model()
 
-    # search
-    search_results = backend.search(q_emb, args.top_k)
-
     # output
     OCR_NOTE = "[NOTE: This text was produced by OCR and may contain recognition errors — misspellings, garbled characters, or missing words.]\n"
 
-    results = []
-    for rank, (score, idx) in enumerate(search_results):
-        if idx < 0 or idx >= len(chunks):
-            continue
-        c = chunks[idx]
-        is_ocr = c.get('ocr', False)
-        results.append({
-            'rank': rank + 1,
-            'score': float(score),
-            'source': c['source'],
-            'chunk': f"{c['chunk']+1}/{c['of']}",
-            'text': c['text'],
-            'ocr': is_ocr,
-        })
+    # Use context-aware search for sqlite-doc backends
+    if backend_type == 'sqlite-doc' and (context > 0 or source_filter):
+        ctx_results = backend.search_with_context(q_emb, args.top_k,
+                                                   context=context,
+                                                   source_filter=source_filter)
+        results = []
+        for rank, hit in enumerate(ctx_results):
+            is_ocr = hit.get('ocr', False)
+            entry = {
+                'rank': rank + 1,
+                'score': hit['score'],
+                'source': hit['source'],
+                'chunk': f"{hit['chunk']+1}/{hit['of']}",
+                'text': hit['text'],
+                'ocr': is_ocr,
+                'adjacent': hit.get('adjacent', []),
+            }
+            results.append(entry)
 
-    if args.json:
-        print(json.dumps(results, indent=2))
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            print(f"=== RAG: \"{args.query}\" ({len(results)} results) ===\n")
+            for r in results:
+                ocr_str = " [OCR]" if r['ocr'] else ""
+                print(f"--- [{r['rank']}] {r['source']} (chunk {r['chunk']}, score {r['score']:.3f}){ocr_str} ---")
+                if r['ocr']:
+                    print(OCR_NOTE)
+                # Show preceding adjacent chunks
+                for adj in r['adjacent']:
+                    if adj['chunk'] < int(r['chunk'].split('/')[0]) - 1:
+                        print(f"  [context: chunk {adj['chunk']+1}]")
+                        print(f"  {adj['text'][:1500]}")
+                        print()
+                print(r['text'][:3000])
+                # Show following adjacent chunks
+                for adj in r['adjacent']:
+                    if adj['chunk'] > int(r['chunk'].split('/')[0]) - 1:
+                        print()
+                        print(f"  [context: chunk {adj['chunk']+1}]")
+                        print(f"  {adj['text'][:1500]}")
+                print()
     else:
-        print(f"=== RAG: \"{args.query}\" ({len(results)} results) ===\n")
-        for r in results:
-            ocr_str = " [OCR]" if r['ocr'] else ""
-            print(f"--- [{r['rank']}] {r['source']} (chunk {r['chunk']}, score {r['score']:.3f}){ocr_str} ---")
-            if r['ocr']:
-                print(OCR_NOTE)
-            print(r['text'][:3000])
-            print()
+        # Standard search path (faiss, sqlite-vec, or sqlite-doc without context)
+        chunks = backend.get_chunks()
+        fetch_k = args.top_k * 10 if source_filter else args.top_k
+        search_results = backend.search(q_emb, fetch_k)
+
+        results = []
+        for rank, (score, idx) in enumerate(search_results):
+            if idx < 0 or idx >= len(chunks):
+                continue
+            c = chunks[idx]
+            # Apply source filter manually for non-sqlite-doc backends
+            if source_filter and source_filter not in c['source']:
+                continue
+            is_ocr = c.get('ocr', False)
+            results.append({
+                'rank': len(results) + 1,
+                'score': float(score),
+                'source': c['source'],
+                'chunk': f"{c['chunk']+1}/{c['of']}",
+                'text': c['text'],
+                'ocr': is_ocr,
+            })
+            if len(results) >= args.top_k:
+                break
+
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            print(f"=== RAG: \"{args.query}\" ({len(results)} results) ===\n")
+            for r in results:
+                ocr_str = " [OCR]" if r['ocr'] else ""
+                print(f"--- [{r['rank']}] {r['source']} (chunk {r['chunk']}, score {r['score']:.3f}){ocr_str} ---")
+                if r['ocr']:
+                    print(OCR_NOTE)
+                print(r['text'][:3000])
+                print()
 
     return 0
 
@@ -1308,11 +1833,8 @@ def cmd_gui(args):
         def worker():
             idx_dir = resolve_index_dir(name)
             hashes = load_index_hashes(idx_dir)
-            sources = set()
-            cp = os.path.join(idx_dir, "chunks.json")
-            if os.path.exists(cp):
-                with open(cp, 'r') as f:
-                    sources = set(c['source'] for c in json.load(f))
+            # Build sources set from hashes (works for all backends)
+            sources = set(hashes.values()) if hashes else set()
             # Apply on main thread
             def apply():
                 _idx_cache['name'] = name
@@ -1348,6 +1870,36 @@ def cmd_gui(args):
             ext = os.path.splitext(f)[1].lower()
             size_mb = os.path.getsize(f) / (1024 * 1024)
             queue_list.insert('end', f"  {os.path.basename(f)}  ({ext}, {size_mb:.1f} MB)")
+
+    def _apply_folder_candidates(paths, folder):
+        """Apply folder scan results to queue (filename-based dedup, no hashing).
+        Full content hashing is deferred to index time."""
+        count = 0
+        dups = []
+        for fpath in paths:
+            fname = os.path.basename(fpath)
+            if fpath in queue_paths:
+                dups.append((fname, "already in queue"))
+            elif fname in _idx_cache['sources']:
+                dups.append((fname, "already in index"))
+            else:
+                file_queue.append(fpath)
+                queue_paths.add(fpath)
+                count += 1
+        refresh_queue()
+        set_busy(False)
+        progress.config(value=0, mode='determinate')
+        label = os.path.basename(folder)
+        msg = f"Added {count} files from {label}"
+        if dups:
+            msg += f"\nSkipped {len(dups)} duplicate(s):"
+            for name, reason in dups:
+                msg += f"\n  - {name}: {reason}"
+        log(msg)
+        if dups:
+            messagebox.showinfo("Duplicates skipped",
+                f"{count} file(s) added, {len(dups)} duplicate(s) skipped.\n\n" +
+                "\n".join(f"- {n}: {r}" for n, r in dups))
 
     def _apply_candidates(candidates, label):
         """Apply hashed candidates to queue on main thread (fast dict lookups only)."""
@@ -1395,18 +1947,16 @@ def cmd_gui(args):
         progress.start(15)
 
         def worker():
+            # Collect matching paths (fast — no hashing, just filesystem walk)
             candidates = []
             for root_dir, dirs, fnames in os.walk(folder):
                 if _shutdown.is_set():
                     return
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
                 for f in sorted(fnames):
-                    fpath = os.path.join(root_dir, f)
-                    if os.path.splitext(f)[1].lower() not in SUPPORTED_EXTS:
-                        continue
-                    fh = file_hash(fpath)
-                    candidates.append((fpath, fh))
-            root.after(0, lambda: (progress.stop(), _apply_candidates(candidates, f" from {os.path.basename(folder)}")))
+                    if os.path.splitext(f)[1].lower() in SUPPORTED_EXTS:
+                        candidates.append(os.path.join(root_dir, f))
+            root.after(0, lambda: (progress.stop(), _apply_folder_candidates(candidates, folder)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1421,22 +1971,9 @@ def cmd_gui(args):
         paths = filedialog.askopenfilenames(title="Select book files", filetypes=filetypes)
         if not paths:
             return
-        set_busy(True, f"Hashing {len(paths)} file(s)...")
-        progress.config(mode='indeterminate')
-        progress.start(15)
-
-        def worker():
-            candidates = []
-            for p in paths:
-                if _shutdown.is_set():
-                    return
-                if os.path.splitext(p)[1].lower() not in SUPPORTED_EXTS:
-                    continue
-                fh = file_hash(p)
-                candidates.append((p, fh))
-            root.after(0, lambda: (progress.stop(), _apply_candidates(candidates, "")))
-
-        threading.Thread(target=worker, daemon=True).start()
+        # Fast path: filter + filename-based dedup (no hashing)
+        candidates = [p for p in paths if os.path.splitext(p)[1].lower() in SUPPORTED_EXTS]
+        _apply_folder_candidates(candidates, "selected files")
 
     def remove_selected():
         sel = sorted(queue_list.curselection(), reverse=True)
@@ -1464,13 +2001,19 @@ def cmd_gui(args):
     btn_clear.pack(side='left', padx=2)
 
     # OCR options
+    no_ocr_var = tk.BooleanVar(value=rag_settings.get('disable_ocr'))
     ocr_var = tk.BooleanVar(value=rag_settings.get('force_ocr'))
     ocr_neg_var = tk.BooleanVar(value=rag_settings.get('ocr_negative'))
     ocr_lang_var = tk.StringVar(value=rag_settings.get('ocr_lang'))
     ttk.Entry(btn_frame, textvariable=ocr_lang_var, width=10).pack(side='right', padx=(0, 5))
     ttk.Label(btn_frame, text="OCR lang:").pack(side='right')
+    split_var = tk.BooleanVar(value=rag_settings.get('split_spreads'))
+    ttk.Checkbutton(btn_frame, text="Split Spreads", variable=split_var).pack(side='right', padx=2)
     ttk.Checkbutton(btn_frame, text="Negative", variable=ocr_neg_var).pack(side='right', padx=2)
     ttk.Checkbutton(btn_frame, text="Force OCR", variable=ocr_var).pack(side='right', padx=2)
+    ttk.Checkbutton(btn_frame, text="No OCR", variable=no_ocr_var).pack(side='right', padx=2)
+    gpu_var = tk.BooleanVar(value=rag_settings.get('gpu_indexing'))
+    ttk.Checkbutton(btn_frame, text="GPU", variable=gpu_var).pack(side='right', padx=2)
 
     # ── progress + log frame ──
     log_frame = ttk.LabelFrame(root, text="Log", padding=8)
@@ -1533,10 +2076,18 @@ def cmd_gui(args):
                 skipped_files = []
                 added_files = []
                 new_file_hashes = {}
-                force_ocr = ocr_var.get()
+                # OCR settings
+                global _ocr_disabled_override, _split_spreads_override
+                disable_ocr = no_ocr_var.get()
+                if disable_ocr:
+                    _ocr_disabled_override = True
+                force_ocr = ocr_var.get() if not disable_ocr else False
                 neg = ocr_neg_var.get()
+                split_sp = split_var.get()
+                if split_sp:
+                    _split_spreads_override = True
                 lang = ocr_lang_var.get().strip() or 'eng'
-                if lang != 'eng':
+                if not disable_ocr and lang != 'eng':
                     if not set_ocr_lang(lang):
                         root.after(0, lambda: messagebox.showerror("OCR language error",
                             f"Language '{lang}' not installed.\nInstall with:\nsudo apt install tesseract-ocr-{lang.replace('_', '-')}"))
@@ -1550,25 +2101,42 @@ def cmd_gui(args):
                     rag_settings.save(cfg)
 
                 opts = []
-                if force_ocr:
+                if disable_ocr:
+                    opts.append("OCR disabled")
+                elif force_ocr:
                     opts.append("force-OCR")
-                if neg:
+                if neg and not disable_ocr:
                     opts.append("negative")
+                if split_sp:
+                    opts.append("split-spreads")
                 if opts:
                     root.after(0, lambda: log(f"OCR mode: {', '.join(opts)}, lang={lang}"))
 
+                # Load existing hashes for dedup at index time
+                existing_hashes = load_index_hashes(index_dir)
+
                 # extract + chunk
+                gui_documents = []  # for sqlite-doc backend
                 for i, fpath in enumerate(file_queue):
                     if _shutdown.is_set():
                         return
                     fname = os.path.basename(fpath)
-                    root.after(0, lambda m=f"[{i+1}/{total}] Extracting: {fname}": log(m))
+                    root.after(0, lambda m=f"[{i+1}/{total}] {fname}": log(m))
                     root.after(0, lambda v=(i / total) * 50: progress.config(value=v))
+
+                    # Hash for dedup (done here instead of during scan)
+                    fhash = file_hash(fpath)
+                    if fhash in existing_hashes:
+                        root.after(0, lambda m=f"  SKIP: duplicate of '{existing_hashes[fhash]}'": log(m))
+                        continue
+                    if fhash in new_file_hashes:
+                        root.after(0, lambda m=f"  SKIP: duplicate content": log(m))
+                        continue
 
                     text, is_ocr = extract_file(fpath, force_ocr=force_ocr)
                     if not text:
                         skipped_files.append(fname)
-                        root.after(0, lambda m=f"  SKIP: {fname} (no text)": log(m))
+                        root.after(0, lambda m=f"  SKIP: no text": log(m))
                         continue
                     chunks = chunk_text(text)
                     ocr_tag = " [OCR]" if is_ocr else ""
@@ -1580,8 +2148,15 @@ def cmd_gui(args):
                             'of': len(chunks),
                             'ocr': is_ocr,
                         })
+                    gui_documents.append({
+                        'source': os.path.basename(fpath),
+                        'full_text': text,
+                        'doc_type': 'book',
+                        'language': None,
+                        'ocr': is_ocr,
+                    })
                     added_files.append(fname)
-                    new_file_hashes[file_hash(fpath)] = fname
+                    new_file_hashes[fhash] = fname
                     root.after(0, lambda m=f"  -> {len(chunks)} chunks{ocr_tag}": log(m))
 
                 if not all_new_chunks:
@@ -1595,10 +2170,15 @@ def cmd_gui(args):
                 # embed
                 if _shutdown.is_set():
                     return
-                root.after(0, lambda: log(f"Embedding {len(all_new_chunks)} chunks..."))
+                use_gpu = gpu_var.get()
+                emb_device = _detect_best_device() if use_gpu else 'cpu'
+                if use_gpu and emb_device == 'cpu':
+                    root.after(0, lambda: log("WARNING: GPU requested but not detected, using CPU"))
+                dev_label = emb_device.upper()
+                root.after(0, lambda: log(f"Embedding {len(all_new_chunks)} chunks ({dev_label})..."))
                 root.after(0, lambda: progress.config(value=50))
                 texts = [c['text'] for c in all_new_chunks]
-                new_embs = embed_texts(texts)
+                new_embs = embed_texts(texts, device=emb_device)
                 _unload_model()
                 dim = new_embs.shape[1]
 
@@ -1645,13 +2225,19 @@ def cmd_gui(args):
                     storage_type = rag_backends.detect_backend(index_dir)
                 gui_backend = rag_backends.get_backend(index_dir, storage_type)
 
-                if existing_chunks and storage_type == 'sqlite-vec':
-                    # For sqlite-vec with existing data, use append
-                    gui_backend.append(
-                        [c for c in final_chunks if c['source'] not in existing_sources],
-                        combined_embs, {})
+                gui_docs = gui_documents if storage_type == 'sqlite-doc' else None
+                if existing_chunks and storage_type in ('sqlite-vec', 'sqlite-doc'):
+                    # For sqlite backends with existing data, use append
+                    new_only = [c for c in final_chunks if c['source'] not in existing_sources]
+                    if storage_type == 'sqlite-doc':
+                        gui_backend.append(new_only, combined_embs, {}, documents=gui_docs)
+                    else:
+                        gui_backend.append(new_only, combined_embs, {})
                 else:
-                    gui_backend.save(final_chunks, combined_embs, {})
+                    if storage_type == 'sqlite-doc':
+                        gui_backend.save(final_chunks, combined_embs, {}, documents=gui_docs)
+                    else:
+                        gui_backend.save(final_chunks, combined_embs, {})
 
                 # save hashes (merge with existing)
                 all_hashes = gui_backend.get_hashes()
@@ -1675,6 +2261,7 @@ def cmd_gui(args):
                 }
                 with open(os.path.join(index_dir, "meta.json"), 'w') as f:
                     json.dump(meta, f, indent=2)
+                save_index_integrity(index_dir)
 
                 # Auto-lock
                 lock_path = os.path.join(index_dir, ".locked")
@@ -1703,6 +2290,8 @@ def cmd_gui(args):
             finally:
                 nonlocal indexing
                 indexing = False
+                _ocr_disabled_override = None  # reset OCR override
+                _split_spreads_override = None  # reset spread override
                 reset_ocr_lang()
                 # Restore negative setting if we overrode it
                 if neg != _saved_neg:
@@ -1792,6 +2381,444 @@ def cmd_editor(args):
         tui.run()
     return 0
 
+
+def cmd_code(args):
+    """Index a codebase with code-specific chunking and sqlite-doc backend."""
+    import numpy as np
+    import subprocess
+
+    project_path = os.path.abspath(args.path)
+    if not os.path.isdir(project_path):
+        print(f"Not a directory: {project_path}")
+        return 1
+
+    index_dir = os.path.join(rag_settings.get_data_dir(), args.name)
+
+    # Protect locked indexes
+    lock_file = os.path.join(index_dir, ".locked")
+    if os.path.exists(lock_file) and not args.append:
+        if not args.force:
+            print(f"Index '{args.name}' is LOCKED. Use --force to overwrite, or --append to add.")
+            return 1
+        else:
+            print(f"WARNING: Overwriting locked index '{args.name}'")
+
+    os.makedirs(index_dir, exist_ok=True)
+
+    # Resolve chunk settings
+    chunk_size = args.chunk_size or rag_settings.get('code_chunk_size')
+    overlap = args.overlap or rag_settings.get('code_overlap')
+
+    # File discovery
+    print(f"Discovering files in {project_path}...", file=sys.stderr)
+    files = []
+    is_git = os.path.exists(os.path.join(project_path, '.git'))
+
+    if is_git:
+        try:
+            result = subprocess.run(
+                ['git', '-C', project_path, 'ls-files'],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                for rel in result.stdout.strip().split('\n'):
+                    if not rel:
+                        continue
+                    fpath = os.path.join(project_path, rel)
+                    if not os.path.isfile(fpath):
+                        continue
+                    ext = os.path.splitext(rel)[1]
+                    basename = os.path.basename(rel)
+                    if ext in CODE_EXTENSIONS or basename in CODE_FILENAMES:
+                        files.append((fpath, rel))
+                print(f"  git ls-files: {len(files)} code files", file=sys.stderr)
+        except Exception as e:
+            print(f"  git ls-files failed ({e}), falling back to walk", file=sys.stderr)
+            is_git = False
+
+    if not is_git:
+        for root_dir, dirs, fnames in os.walk(project_path):
+            dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith('.'))
+            for f in sorted(fnames):
+                ext = os.path.splitext(f)[1]
+                if ext in CODE_EXTENSIONS or f in CODE_FILENAMES:
+                    fpath = os.path.join(root_dir, f)
+                    rel = os.path.relpath(fpath, project_path)
+                    files.append((fpath, rel))
+        print(f"  Directory walk: {len(files)} code files", file=sys.stderr)
+
+    if not files:
+        print(f"No code files found in {project_path}")
+        return 1
+
+    # Load existing hashes for dedup
+    existing_hashes = load_index_hashes(index_dir) if args.append else {}
+
+    # Deduplicate
+    deduped = []
+    new_hashes = {}
+    for fpath, rel in files:
+        fh = file_hash(fpath)
+        if fh in existing_hashes or fh in new_hashes:
+            continue
+        deduped.append((fpath, rel))
+        new_hashes[fh] = rel
+
+    if not deduped:
+        print("All files already in index. Nothing to add.")
+        return 0
+
+    print(f"Indexing {len(deduped)} code files...")
+
+    # Extract, chunk, build documents
+    all_chunks = []
+    documents = []
+    skipped = []
+
+    for i, (fpath, rel) in enumerate(deduped):
+        try:
+            with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
+                text = f.read()
+        except Exception as e:
+            skipped.append((rel, str(e)))
+            continue
+
+        text = sanitize_text(text)
+        if not text.strip():
+            skipped.append((rel, "empty file"))
+            continue
+
+        lang = _detect_language(rel)
+        documents.append({
+            'source': rel,
+            'full_text': text,
+            'doc_type': 'code',
+            'language': lang or None,
+            'ocr': False,
+        })
+
+        chunks = chunk_code(text, rel, chunk_size, overlap)
+        for ci, chunk in enumerate(chunks):
+            all_chunks.append({
+                'text': chunk,
+                'source': rel,
+                'chunk': ci,
+                'of': len(chunks),
+                'ocr': False,
+            })
+
+        if (i + 1) % 50 == 0 or i == len(deduped) - 1:
+            print(f"  [{i+1}/{len(deduped)}] {len(all_chunks)} chunks so far...", file=sys.stderr)
+
+    # Generate project summary synthetic chunk
+    tree_lines = []
+    seen_dirs = set()
+    for _, rel in sorted(deduped, key=lambda x: x[1]):
+        parts = rel.split(os.sep)
+        # Show up to depth 3
+        if len(parts) <= 3:
+            tree_lines.append(rel)
+        else:
+            dir_part = os.sep.join(parts[:3])
+            if dir_part not in seen_dirs:
+                seen_dirs.add(dir_part)
+                tree_lines.append(dir_part + os.sep + "...")
+
+    summary_text = f"# Project: {os.path.basename(project_path)}\n\n"
+    summary_text += f"## File tree ({len(deduped)} files)\n"
+    summary_text += "\n".join(tree_lines[:200])  # cap at 200 lines
+
+    # Add README content if present
+    for readme_name in ('README.md', 'README.rst', 'README.txt', 'README'):
+        readme_path = os.path.join(project_path, readme_name)
+        if os.path.exists(readme_path):
+            try:
+                with open(readme_path, 'r', encoding='utf-8', errors='replace') as f:
+                    readme_text = f.read()[:2000]
+                summary_text += f"\n\n## README\n{readme_text}"
+            except Exception:
+                pass
+            break
+
+    # Add summary as a synthetic document + chunk
+    documents.append({
+        'source': '__project_summary__',
+        'full_text': summary_text,
+        'doc_type': 'code',
+        'language': None,
+        'ocr': False,
+    })
+    all_chunks.append({
+        'text': summary_text,
+        'source': '__project_summary__',
+        'chunk': 0,
+        'of': 1,
+        'ocr': False,
+    })
+
+    if skipped:
+        print(f"\nSkipped {len(skipped)} file(s):")
+        for name, reason in skipped[:20]:
+            print(f"  - {name}: {reason}")
+
+    if not all_chunks:
+        print("No content extracted!")
+        return 1
+
+    # Resolve embedding device
+    use_gpu = args.gpu if args.gpu is not None else rag_settings.get('gpu_indexing')
+    device = _detect_best_device() if use_gpu else 'cpu'
+    if use_gpu and device == 'cpu':
+        print("WARNING: --gpu requested but no GPU detected, falling back to CPU", file=sys.stderr)
+
+    print(f"\n{len(all_chunks)} chunks from {len(documents)} files. Embedding ({device.upper()})...")
+
+    texts = [c['text'] for c in all_chunks]
+    embeddings = embed_texts(texts, device=device)
+    _unload_model()
+
+    dim = embeddings.shape[1]
+
+    # Always use sqlite-doc for code indexes
+    storage_type = 'sqlite-doc'
+    if args.append:
+        detected = rag_backends.detect_backend(index_dir)
+        if detected != 'sqlite-doc':
+            print(f"WARNING: Existing index uses '{detected}', but code requires sqlite-doc.")
+            print(f"  Use without --append to recreate the index.")
+            return 1
+        storage_type = detected
+
+    backend = rag_backends.get_backend(index_dir, storage_type)
+
+    all_hashes = {**existing_hashes, **new_hashes}
+
+    if args.append and backend.exists():
+        backend.append(all_chunks, embeddings, new_hashes, documents=documents)
+    else:
+        backend.save(all_chunks, embeddings, all_hashes, documents=documents)
+
+    # Write metadata
+    n_sources = len(set(c['source'] for c in all_chunks))
+    emb_backend = rag_settings.get('embedding_backend')
+    emb_model = rag_settings.get('embedding_model') if emb_backend == 'local' else rag_settings.get('api_model')
+    meta = {
+        'source_dir': project_path,
+        'chunk_size': chunk_size,
+        'overlap': overlap,
+        'n_chunks': backend.get_total(),
+        'n_files': len(backend.list_documents()),
+        'dim': dim,
+        'storage_backend': storage_type,
+        'embedding_backend': emb_backend,
+        'embedding_model': emb_model,
+        'index_type': 'code',
+    }
+    with open(os.path.join(index_dir, "meta.json"), 'w') as f:
+        json.dump(meta, f, indent=2)
+    save_index_integrity(index_dir)
+
+    # Auto-lock
+    lock_path = os.path.join(index_dir, ".locked")
+    if not os.path.exists(lock_path):
+        with open(lock_path, 'w') as f:
+            f.write("locked\n")
+
+    print(f"\nDone! Index '{args.name}' -> {index_dir} [AUTO-LOCKED]")
+    print(f"  {meta['n_chunks']} chunks from {meta['n_files']} files, {dim}-dim embeddings")
+    print(f"  Backend: sqlite-doc (document-aware)")
+    return 0
+
+
+def cmd_read(args):
+    """Retrieve full document text from a sqlite-doc index."""
+    index_dir = resolve_index_dir(args.name)
+    if not _cli_integrity_gate(args.name, index_dir):
+        return 1
+    backend_type = rag_backends.detect_backend(index_dir)
+
+    if backend_type != 'sqlite-doc':
+        print(f"Index '{args.name}' uses '{backend_type}' backend.")
+        print(f"Document retrieval requires sqlite-doc backend.")
+        print(f"Re-index with: rag.py code /path --name {args.name}")
+        return 1
+
+    backend = rag_backends.get_backend(index_dir, backend_type)
+    if not backend.exists():
+        print(f"Index '{args.name}' not found.")
+        return 1
+
+    doc = backend.get_document(args.source)
+    if not doc:
+        # Try partial match
+        docs = backend.list_documents()
+        matches = [d for d in docs if args.source in d['source']]
+        if matches:
+            print(f"Source '{args.source}' not found. Did you mean:")
+            for d in matches[:10]:
+                print(f"  - {d['source']} ({d['chunk_count']} chunks)")
+        else:
+            print(f"Source '{args.source}' not found in index '{args.name}'.")
+            print(f"Use: rag.py sources --name {args.name}")
+        return 1
+
+    if args.json:
+        print(json.dumps({
+            'source': doc['source'],
+            'doc_type': doc['doc_type'],
+            'language': doc['language'],
+            'ocr': doc['ocr'],
+            'text': doc['full_text'],
+        }, indent=2))
+    else:
+        lang_str = f" [{doc['language']}]" if doc['language'] else ""
+        ocr_str = " [OCR]" if doc['ocr'] else ""
+        print(f"=== {doc['source']}{lang_str}{ocr_str} ===\n")
+        print(doc['full_text'])
+
+    return 0
+
+
+def cmd_chunk(args):
+    """Retrieve a specific chunk from a sqlite-doc index."""
+    index_dir = resolve_index_dir(args.name)
+    if not _cli_integrity_gate(args.name, index_dir):
+        return 1
+    backend_type = rag_backends.detect_backend(index_dir)
+
+    if backend_type != 'sqlite-doc':
+        print(f"Index '{args.name}' uses '{backend_type}' backend.")
+        print(f"Chunk navigation requires sqlite-doc backend.")
+        return 1
+
+    backend = rag_backends.get_backend(index_dir, backend_type)
+    if not backend.exists():
+        print(f"Index '{args.name}' not found.")
+        return 1
+
+    chunks = backend.get_document_chunks(args.source)
+    if not chunks:
+        print(f"Source '{args.source}' not found in index '{args.name}'.")
+        return 1
+
+    chunk_num = args.chunk
+    if chunk_num < 0 or chunk_num >= len(chunks):
+        print(f"Chunk {chunk_num} out of range. Source has {len(chunks)} chunks (0-{len(chunks)-1}).")
+        return 1
+
+    c = chunks[chunk_num]
+    if args.json:
+        print(json.dumps({
+            'source': args.source,
+            'chunk': c['chunk'],
+            'of': c['of'],
+            'text': c['text'],
+        }, indent=2))
+    else:
+        print(f"=== {args.source} (chunk {c['chunk']+1}/{c['of']}) ===\n")
+        print(c['text'])
+
+    return 0
+
+
+def cmd_sources(args):
+    """List all sources in an index with chunk counts."""
+    index_dir = resolve_index_dir(args.name)
+    if not _cli_integrity_gate(args.name, index_dir):
+        return 1
+    backend_type = rag_backends.detect_backend(index_dir)
+    backend = rag_backends.get_backend(index_dir, backend_type)
+
+    if not backend.exists():
+        print(f"Index '{args.name}' not found.")
+        return 1
+
+    # For sqlite-doc, use list_documents for richer info
+    if backend_type == 'sqlite-doc':
+        docs = backend.list_documents()
+        if not docs:
+            print(f"Index '{args.name}' has no documents.")
+            return 0
+        print(f"{len(docs)} files in '{args.name}':")
+        for d in docs:
+            lang_str = f" [{d['language']}]" if d['language'] else ""
+            type_str = f" ({d['doc_type']})" if d['doc_type'] != 'book' else ""
+            print(f"  {d['source']}: {d['chunk_count']} chunks{lang_str}{type_str}")
+    else:
+        sources = get_index_sources(args.name)
+        if not sources:
+            print(f"Index '{args.name}' has no sources.")
+            return 0
+        print(f"{len(sources)} files in '{args.name}':")
+        for src, count in sorted(sources.items()):
+            print(f"  {src}: {count} chunks")
+
+    return 0
+
+
+def cmd_verify(args):
+    """Full SHA-256 verification of an index."""
+    index_dir = resolve_index_dir(args.name)
+    if not os.path.exists(os.path.join(index_dir, "meta.json")):
+        print(f"Index '{args.name}' not found.")
+        return 1
+
+    result = check_index_integrity(index_dir, fast=False)
+    if result.get('untracked'):
+        print(f"Index '{args.name}': UNVERIFIED (no .integrity file)")
+        print(f"Run 'rag.py integrity --rehash --name {args.name}' to hash it.")
+        return 1
+
+    if result['suppressed']:
+        print(f"Index '{args.name}': integrity warnings are suppressed.")
+        print(f"Run 'rag.py integrity --rehash --name {args.name}' to recompute hashes.")
+        return 0
+
+    if result['ok']:
+        print(f"Index '{args.name}': OK (all hashes verified)")
+        return 0
+
+    print(f"Index '{args.name}': INTEGRITY MISMATCH")
+    for d in result['details']:
+        print(f"  - {d}")
+    return 1
+
+
+def cmd_integrity(args):
+    """Manage index integrity: accept (suppress) or rehash."""
+    index_dir = resolve_index_dir(args.name)
+    if not os.path.exists(os.path.join(index_dir, "meta.json")):
+        print(f"Index '{args.name}' not found.")
+        return 1
+
+    if args.rehash:
+        save_index_integrity(index_dir)
+        print(f"Index '{args.name}': integrity hashes computed and saved.")
+        return 0
+
+    if args.accept:
+        suppress_index_integrity(index_dir)
+        print(f"Index '{args.name}': integrity warnings suppressed.")
+        return 0
+
+    # Default: show current status
+    result = check_index_integrity(index_dir, fast=False)
+    if result.get('untracked'):
+        print(f"Index '{args.name}': UNVERIFIED (no .integrity file)")
+        print(f"  Use --rehash to compute and save integrity hashes.")
+    elif result['suppressed']:
+        print(f"Index '{args.name}': warnings suppressed")
+        print(f"  Use --rehash to recompute with fresh hashes.")
+    elif result['ok']:
+        print(f"Index '{args.name}': OK")
+    else:
+        print(f"Index '{args.name}': INTEGRITY MISMATCH")
+        for d in result['details']:
+            print(f"  - {d}")
+        print(f"\n  Use --accept to suppress, --rehash to recompute.")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description="RAG-Narock — local RAG for Claude Code (CPU-only)")
     sub = p.add_subparsers(dest='cmd')
@@ -1803,16 +2830,44 @@ def main():
     pi.add_argument('--overlap', type=int, default=None, help='Overlap (default: from settings)')
     pi.add_argument('--force', action='store_true', help='Overwrite a locked index')
     pi.add_argument('--append', action='store_true', help='Add to existing index without overwriting')
+    pi.add_argument('--no-ocr', action='store_true', default=None, help='Disable all OCR (skip image-only files and OCR fallbacks)')
     pi.add_argument('--ocr', action='store_true', default=None, help='Force OCR on all PDFs (ignore text layers)')
     pi.add_argument('--ocr-lang', default=None, help='Tesseract language(s) for OCR (e.g. hin, chi_sim, eng+hin)')
     pi.add_argument('--ocr-negative', action='store_true', default=None, help='Invert image colors before OCR (helps with light-on-dark text)')
-    pi.add_argument('--storage-backend', choices=['faiss', 'sqlite-vec'], default=None, help='Storage backend (default: from settings)')
+    pi.add_argument('--split-spreads', action='store_true', default=None, help='Split side-by-side scanned pages before OCR')
+    pi.add_argument('--storage-backend', choices=['faiss', 'sqlite-vec', 'sqlite-doc'], default=None, help='Storage backend (default: from settings)')
+    pi.add_argument('--gpu', action='store_true', default=None, help='Use GPU for embedding (auto-detect XPU/CUDA)')
 
     pq = sub.add_parser('query', help='Query the index')
     pq.add_argument('query', help='Search query text')
     pq.add_argument('--name', default='default', help='Index name')
     pq.add_argument('--top-k', type=int, default=None, help='Top K results (default: from settings)')
     pq.add_argument('--json', action='store_true', help='JSON output (for Claude)')
+    pq.add_argument('--context', type=int, default=0, help='Include N adjacent chunks (sqlite-doc only)')
+    pq.add_argument('--source', default='', help='Filter results to matching source paths')
+
+    pc = sub.add_parser('code', help='Index a codebase (code-specific chunking, sqlite-doc)')
+    pc.add_argument('path', help='Project directory to index')
+    pc.add_argument('--name', default='default', help='Index name')
+    pc.add_argument('--chunk-size', type=int, default=None, help='Chunk size (default: 3000)')
+    pc.add_argument('--overlap', type=int, default=None, help='Overlap (default: 200)')
+    pc.add_argument('--force', action='store_true', help='Overwrite a locked index')
+    pc.add_argument('--append', action='store_true', help='Add to existing index')
+    pc.add_argument('--gpu', action='store_true', default=None, help='Use GPU for embedding (auto-detect XPU/CUDA)')
+
+    pr = sub.add_parser('read', help='Read full document from sqlite-doc index')
+    pr.add_argument('--name', required=True, help='Index name')
+    pr.add_argument('--source', required=True, help='Source path (e.g. src/auth.py)')
+    pr.add_argument('--json', action='store_true', help='JSON output')
+
+    pk = sub.add_parser('chunk', help='Read specific chunk from sqlite-doc index')
+    pk.add_argument('--name', required=True, help='Index name')
+    pk.add_argument('--source', required=True, help='Source path')
+    pk.add_argument('--chunk', type=int, required=True, help='Chunk number (0-indexed)')
+    pk.add_argument('--json', action='store_true', help='JSON output')
+
+    ps = sub.add_parser('sources', help='List all sources in an index')
+    ps.add_argument('--name', required=True, help='Index name')
 
     sub.add_parser('list', help='List indexes')
 
@@ -1839,6 +2894,14 @@ def main():
     pe = sub.add_parser('editor', help='Edit/manage indexes (TUI or --gui)')
     pe.add_argument('--gui', action='store_true', help='Open GUI editor instead of TUI')
 
+    pv = sub.add_parser('verify', help='Full SHA-256 verification of index integrity')
+    pv.add_argument('--name', required=True, help='Index name to verify')
+
+    pit = sub.add_parser('integrity', help='Manage index integrity (accept/rehash)')
+    pit.add_argument('--name', required=True, help='Index name')
+    pit.add_argument('--accept', action='store_true', help='Suppress integrity warnings')
+    pit.add_argument('--rehash', action='store_true', help='Recompute integrity hashes')
+
     args = p.parse_args()
     if not args.cmd:
         p.print_help()
@@ -1847,7 +2910,10 @@ def main():
     cmds = {'index': cmd_index, 'query': cmd_query, 'list': cmd_list,
             'lock': cmd_lock, 'unlock': cmd_unlock, 'delete': cmd_delete,
             'add-external': cmd_add_external, 'move': cmd_move,
-            'gui': cmd_gui, 'settings': cmd_settings, 'editor': cmd_editor}
+            'gui': cmd_gui, 'settings': cmd_settings, 'editor': cmd_editor,
+            'code': cmd_code, 'read': cmd_read, 'chunk': cmd_chunk,
+            'sources': cmd_sources, 'verify': cmd_verify,
+            'integrity': cmd_integrity}
     return cmds[args.cmd](args)
 
 if __name__ == '__main__':

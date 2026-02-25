@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Michael Burgus (https://github.com/NeuralDrifter)
-# Licensed under the MIT License. See LICENSE file for details.
 """
 RAG-Narock Index Editor — TUI (curses) and GUI (tkinter) interfaces
 for managing indexes: view sources, remove sources, delete indexes,
-lock/unlock indexes.
+lock/unlock indexes, rename indexes.
 """
 
-import os, sys, json
+import os, sys, json, re
 
 # Lazy import from rag.py to avoid circular imports
 def _rag():
@@ -45,6 +43,10 @@ class EditorTUI:
         self.confirm_cursor = 1  # 0=Yes, 1=No (default No)
         self.confirm_action = None
         self.confirm_msg_lines = []
+        self.renaming = False
+        self.rename_buf = ""
+        self.rename_cur = 0  # cursor position in buffer
+        self.rename_old = ""  # original index name
         self._refresh_indexes()
 
     def _refresh_indexes(self):
@@ -60,11 +62,15 @@ class EditorTUI:
             storage = meta.get('storage_backend', 'faiss')
             emb_model = meta.get('embedding_model', '?')
             emb_backend = meta.get('embedding_backend', 'local')
+            integrity = rag.check_index_integrity(index_dir)
+            tampered = not integrity['ok'] and not integrity.get('untracked')
+            unverified = integrity.get('untracked', False)
             self.indexes.append({
                 'name': name, 'n_chunks': n_chunks,
                 'n_files': n_files, 'locked': locked,
                 'storage': storage, 'emb_model': emb_model,
-                'emb_backend': emb_backend,
+                'emb_backend': emb_backend, 'tampered': tampered,
+                'unverified': unverified,
             })
 
     def _refresh_sources(self):
@@ -135,7 +141,9 @@ class EditorTUI:
             self._draw()
             ch = stdscr.getch()
 
-            if self.confirming:
+            if self.renaming:
+                self._handle_rename(ch)
+            elif self.confirming:
                 self._handle_confirm(ch)
             else:
                 action = self._handle_nav(ch)
@@ -207,7 +215,14 @@ class EditorTUI:
                 self.mode = self.MODE_SOURCE
                 self.cursor = 0
                 self.scroll_offset = 0
-                self.status_msg = ""
+                if idx.get('tampered'):
+                    self.status_msg = "WARNING: Integrity mismatch — data may have been modified outside RAG-Narock. Press Backspace, then 'h' to rehash."
+                    self.status_color = 5  # red
+                elif idx.get('unverified'):
+                    self.status_msg = "UNVERIFIED: Press Backspace, then 'h' to compute integrity hashes for this index."
+                    self.status_color = 6  # yellow
+                else:
+                    self.status_msg = ""
                 return True
 
         if ch in (ord('d'), curses.KEY_DC):  # Delete
@@ -258,7 +273,7 @@ class EditorTUI:
         if ch == ord('u') and self.mode == self.MODE_INDEX and n > 0:
             idx = self.indexes[self.cursor]
             if idx['locked']:
-                lock_file = os.path.join(rag.resolve_index_dir(idx['name']), ".locked")
+                lock_file = os.path.join(_rag().resolve_index_dir(idx['name']), ".locked")
                 if os.path.exists(lock_file):
                     os.remove(lock_file)
                 self._refresh_indexes()
@@ -273,7 +288,7 @@ class EditorTUI:
         if ch == ord('l') and self.mode == self.MODE_INDEX and n > 0:
             idx = self.indexes[self.cursor]
             if not idx['locked']:
-                lock_file = os.path.join(rag.resolve_index_dir(idx['name']), ".locked")
+                lock_file = os.path.join(_rag().resolve_index_dir(idx['name']), ".locked")
                 with open(lock_file, 'w') as f:
                     f.write("locked\n")
                 self._refresh_indexes()
@@ -283,6 +298,34 @@ class EditorTUI:
             else:
                 self.status_msg = f"'{idx['name']}' is already locked"
                 self.status_color = 6
+            return True
+
+        if ch == ord('h') and self.mode == self.MODE_INDEX and n > 0:
+            idx = self.indexes[self.cursor]
+            try:
+                rag = _rag()
+                index_dir = rag.resolve_index_dir(idx['name'])
+                rag.save_index_integrity(index_dir)
+                self._refresh_indexes()
+                self._clamp_cursor()
+                self.status_msg = f"Integrity hashes computed for '{idx['name']}'"
+                self.status_color = 4  # green
+            except Exception as e:
+                self.status_msg = f"ERROR: {e}"
+                self.status_color = 5
+            return True
+
+        if ch == ord('r') and self.mode == self.MODE_INDEX and n > 0:
+            idx = self.indexes[self.cursor]
+            if idx['locked']:
+                self.status_msg = f"Index '{idx['name']}' is LOCKED. Press 'u' to unlock first."
+                self.status_color = 5
+                return True
+            self.renaming = True
+            self.rename_old = idx['name']
+            self.rename_buf = idx['name']
+            self.rename_cur = len(self.rename_buf)
+            self.status_msg = ""
             return True
 
         return True
@@ -331,6 +374,78 @@ class EditorTUI:
             except Exception as e:
                 self.status_msg = f"ERROR: {e}"
                 self.status_color = 5
+
+    def _handle_rename(self, ch):
+        import curses
+
+        if ch == 27:  # Esc — cancel
+            self.renaming = False
+            self.status_msg = "Rename cancelled."
+            self.status_color = 6
+            return
+
+        if ch in (curses.KEY_ENTER, 10, 13):
+            self.renaming = False
+            new_name = self.rename_buf.strip()
+            if not new_name or new_name == self.rename_old:
+                self.status_msg = "Rename cancelled." if not new_name else "Name unchanged."
+                self.status_color = 6
+                return
+            if not re.match(r'^[A-Za-z0-9_-]+$', new_name):
+                self.status_msg = "Invalid name. Use letters, digits, _ or - only."
+                self.status_color = 5
+                return
+            existing = {ix['name'] for ix in self.indexes}
+            if new_name in existing:
+                self.status_msg = f"Index '{new_name}' already exists."
+                self.status_color = 5
+                return
+            try:
+                rag = _rag()
+                old_dir = rag.resolve_index_dir(self.rename_old)
+                new_dir = os.path.join(os.path.dirname(old_dir), new_name)
+                os.rename(old_dir, new_dir)
+                self._refresh_indexes()
+                self._clamp_cursor()
+                self.status_msg = f"Renamed '{self.rename_old}' -> '{new_name}'"
+                self.status_color = 4
+            except Exception as e:
+                self.status_msg = f"ERROR: {e}"
+                self.status_color = 5
+            return
+
+        if ch in (curses.KEY_BACKSPACE, 127, 8):
+            if self.rename_cur > 0:
+                self.rename_buf = self.rename_buf[:self.rename_cur-1] + self.rename_buf[self.rename_cur:]
+                self.rename_cur -= 1
+            return
+
+        if ch == curses.KEY_DC:
+            if self.rename_cur < len(self.rename_buf):
+                self.rename_buf = self.rename_buf[:self.rename_cur] + self.rename_buf[self.rename_cur+1:]
+            return
+
+        if ch == curses.KEY_LEFT:
+            self.rename_cur = max(0, self.rename_cur - 1)
+            return
+
+        if ch == curses.KEY_RIGHT:
+            self.rename_cur = min(len(self.rename_buf), self.rename_cur + 1)
+            return
+
+        if ch == curses.KEY_HOME or ch == 1:  # Home or Ctrl-A
+            self.rename_cur = 0
+            return
+
+        if ch == curses.KEY_END or ch == 5:  # End or Ctrl-E
+            self.rename_cur = len(self.rename_buf)
+            return
+
+        # Printable character
+        if 32 <= ch <= 126:
+            c = chr(ch)
+            self.rename_buf = self.rename_buf[:self.rename_cur] + c + self.rename_buf[self.rename_cur:]
+            self.rename_cur += 1
 
     def _draw(self):
         import curses
@@ -451,10 +566,20 @@ class EditorTUI:
             if self.mode == self.MODE_INDEX:
                 ix = items[idx]
                 lock_str = " [LOCKED]" if ix['locked'] else ""
+                if ix.get('tampered'):
+                    integrity_str = " [TAMPERED]"
+                elif ix.get('unverified'):
+                    integrity_str = " [UNVERIFIED]"
+                else:
+                    integrity_str = ""
                 extra = f" [{ix.get('storage', 'faiss')}, {ix.get('emb_model', '?')}]"
-                line = f"{ix['name']}  ({ix['n_chunks']:,}ch, {ix['n_files']}f){lock_str}{extra}"
+                line = f"{ix['name']}  ({ix['n_chunks']:,}ch, {ix['n_files']}f){lock_str}{integrity_str}{extra}"
                 if selected:
                     lbl_attr = self._attr(2)
+                elif ix.get('tampered'):
+                    lbl_attr = self._attr(5)  # red for tampered
+                elif ix.get('unverified'):
+                    lbl_attr = self._attr(6)  # yellow for unverified
                 elif ix['locked']:
                     lbl_attr = self._attr(6)
                 else:
@@ -506,7 +631,7 @@ class EditorTUI:
             pass
 
         if self.mode == self.MODE_INDEX:
-            help_text = "  Enter=view  d=delete  l=lock  u=unlock  q/Esc=exit"
+            help_text = "  Enter=view  d=delete  r=rename  l=lock  u=unlock  h=hash  q/Esc=exit"
         else:
             help_text = "  d=remove source  Backspace=back  q/Esc=exit"
         try:
@@ -514,9 +639,11 @@ class EditorTUI:
         except curses.error:
             pass
 
-        # Confirmation overlay
+        # Overlays
         if self.confirming:
             self._draw_confirm(h, w)
+        if self.renaming:
+            self._draw_rename(h, w)
 
         stdscr.refresh()
 
@@ -567,6 +694,62 @@ class EditorTUI:
         try:
             self.stdscr.addstr(btn_row, btn_x, yes_label, yes_attr)
             self.stdscr.addstr(btn_row, btn_x + len(yes_label) + 5, no_label, no_attr)
+        except curses.error:
+            pass
+
+    def _draw_rename(self, h, w):
+        import curses
+        box_w = min(56, w - 4)
+        box_h = 7
+        box_y = max(1, (h - box_h) // 2)
+        box_x = max(1, (w - box_w) // 2)
+
+        accent_attr = self._attr(6, curses.A_BOLD)
+        border_attr = self._attr(7, curses.A_DIM)
+
+        # Draw box
+        top = "+" + "=" * (box_w - 2) + "+"
+        bot = "+" + "=" * (box_w - 2) + "+"
+        mid = "|" + " " * (box_w - 2) + "|"
+
+        try:
+            self.stdscr.addstr(box_y, box_x, top[:box_w], accent_attr)
+            for r in range(1, box_h - 1):
+                self.stdscr.addstr(box_y + r, box_x, mid[:box_w], accent_attr)
+            self.stdscr.addstr(box_y + box_h - 1, box_x, bot[:box_w], accent_attr)
+        except curses.error:
+            pass
+
+        # Title
+        title = f" Rename '{self.rename_old}' "
+        try:
+            self.stdscr.addstr(box_y, box_x + 2, title[:box_w-4], accent_attr)
+        except curses.error:
+            pass
+
+        # Input field
+        field_w = box_w - 6
+        buf = self.rename_buf
+        # Scroll the visible portion if buffer is wider than field
+        vis_start = max(0, self.rename_cur - field_w + 1)
+        vis_text = buf[vis_start:vis_start + field_w]
+        cursor_x = self.rename_cur - vis_start
+
+        try:
+            self.stdscr.addstr(box_y + 2, box_x + 3, " " * field_w, curses.A_UNDERLINE)
+            self.stdscr.addstr(box_y + 2, box_x + 3, vis_text[:field_w], curses.A_UNDERLINE | curses.A_BOLD)
+            # Draw cursor
+            if cursor_x < field_w:
+                cursor_ch = buf[self.rename_cur] if self.rename_cur < len(buf) else " "
+                self.stdscr.addstr(box_y + 2, box_x + 3 + cursor_x, cursor_ch,
+                                   self._attr(2, curses.A_BOLD))
+        except curses.error:
+            pass
+
+        # Hint
+        hint = "Enter=confirm  Esc=cancel"
+        try:
+            self.stdscr.addstr(box_y + 4, box_x + 3, hint[:box_w-6], self._attr(6))
         except curses.error:
             pass
 
@@ -661,9 +844,17 @@ class EditorDialog:
                                       command=self._delete_index)
         self.delete_btn.pack(side='left', padx=2)
 
+        self.rename_btn = ttk.Button(btn_frame, text="Rename", style='Editor.TButton',
+                                      command=self._rename_index)
+        self.rename_btn.pack(side='left', padx=2)
+
         self.lock_btn = ttk.Button(btn_frame, text="Lock/Unlock", style='Editor.TButton',
                                     command=self._toggle_lock)
         self.lock_btn.pack(side='left', padx=2)
+
+        self.hash_btn = ttk.Button(btn_frame, text="Hash", style='Editor.TButton',
+                                    command=self._hash_index)
+        self.hash_btn.pack(side='left', padx=2)
 
         self.remove_btn = ttk.Button(btn_frame, text="Remove Source", style='Danger.TButton',
                                       command=self._remove_source)
@@ -698,11 +889,21 @@ class EditorDialog:
             n_files = meta.get('n_files', 0)
             storage = meta.get('storage_backend', 'faiss')
             emb_model = meta.get('embedding_model', '?')
+            integrity = rag.check_index_integrity(index_dir)
+            tampered = not integrity['ok'] and not integrity.get('untracked')
+            unverified = integrity.get('untracked', False)
             lock_str = " [LOCKED]" if locked else ""
-            self.index_list.insert('end', f"  {name}  ({n_chunks:,}ch, {n_files}f){lock_str} [{storage}, {emb_model}]")
+            if tampered:
+                integrity_str = " [TAMPERED]"
+            elif unverified:
+                integrity_str = " [UNVERIFIED]"
+            else:
+                integrity_str = ""
+            self.index_list.insert('end', f"  {name}  ({n_chunks:,}ch, {n_files}f){lock_str}{integrity_str} [{storage}, {emb_model}]")
             self._indexes.append({
                 'name': name, 'n_chunks': n_chunks,
                 'n_files': n_files, 'locked': locked,
+                'tampered': tampered, 'unverified': unverified,
             })
         self.source_list.delete(0, 'end')
         self.right_frame.configure(text="Sources")
@@ -719,6 +920,10 @@ class EditorDialog:
         for src_name, count in self._sources:
             self.source_list.insert('end', f"  {src_name}  ({count:,} chunks)")
         self.right_frame.configure(text=f"Sources in: {idx['name']}")
+        if idx.get('tampered'):
+            self.status_var.set(f"WARNING: '{idx['name']}' integrity mismatch — data may have been modified. Use 'Hash' button to re-verify.")
+        elif idx.get('unverified'):
+            self.status_var.set(f"UNVERIFIED: '{idx['name']}' has no integrity record. Use 'Hash' button to compute hashes.")
 
     def _selected_index(self):
         sel = self.index_list.curselection()
@@ -755,6 +960,44 @@ class EditorDialog:
         except Exception as e:
             messagebox.showerror("Error", str(e), parent=self.win)
 
+    def _rename_index(self):
+        from tkinter import messagebox, simpledialog
+        idx = self._selected_index()
+        if not idx:
+            return
+        if idx['locked']:
+            messagebox.showwarning("Locked",
+                f"Index '{idx['name']}' is LOCKED.\nUnlock it first.",
+                parent=self.win)
+            return
+        new_name = simpledialog.askstring("Rename Index",
+            f"Rename '{idx['name']}' to:",
+            initialvalue=idx['name'], parent=self.win)
+        if not new_name or new_name.strip() == idx['name']:
+            return
+        new_name = new_name.strip()
+        if not re.match(r'^[A-Za-z0-9_-]+$', new_name):
+            messagebox.showerror("Invalid Name",
+                "Use letters, digits, underscores or hyphens only.",
+                parent=self.win)
+            return
+        existing = {ix['name'] for ix in self._indexes}
+        if new_name in existing:
+            messagebox.showerror("Name Exists",
+                f"Index '{new_name}' already exists.",
+                parent=self.win)
+            return
+        try:
+            rag = _rag()
+            old_dir = rag.resolve_index_dir(idx['name'])
+            new_dir = os.path.join(os.path.dirname(old_dir), new_name)
+            os.rename(old_dir, new_dir)
+            self.status_var.set(f"Renamed '{idx['name']}' -> '{new_name}'")
+            self._refresh_indexes()
+            self._notify_change()
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self.win)
+
     def _toggle_lock(self):
         idx = self._selected_index()
         if not idx:
@@ -770,6 +1013,22 @@ class EditorDialog:
             self.status_var.set(f"Locked '{idx['name']}'")
         self._refresh_indexes()
         self._notify_change()
+
+    def _hash_index(self):
+        """Compute and save integrity hashes for the selected index."""
+        idx = self._selected_index()
+        if not idx:
+            return
+        try:
+            rag = _rag()
+            index_dir = rag.resolve_index_dir(idx['name'])
+            rag.save_index_integrity(index_dir)
+            self.status_var.set(f"Integrity hashes computed for '{idx['name']}'")
+            self._refresh_indexes()
+            self._notify_change()
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", str(e), parent=self.win)
 
     def _remove_source(self):
         from tkinter import messagebox

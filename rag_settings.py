@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Michael Burgus (https://github.com/NeuralDrifter)
-# Licensed under the MIT License. See LICENSE file for details.
 """
 RAG Settings — unified config with curses TUI and tkinter GUI dialog.
 
@@ -52,6 +50,8 @@ TABS = [
             ("ollama",   "Ollama (GPU)"),
             ("lmstudio", "LM Studio (GPU)"),
         ], "local"),
+        ("gpu_indexing",  "GPU Indexing",  "toggle", None, False),
+        ("conda_env",     "Conda Env",    "text",   None, "ai-env"),
         ("embedding_model", "Local Model", "choice", [
             ("all-MiniLM-L6-v2",                        "all-MiniLM-L6-v2 (English, 384d, fast)"),
             ("all-MiniLM-L12-v2",                       "all-MiniLM-L12-v2 (English, 384d, balanced)"),
@@ -63,9 +63,11 @@ TABS = [
         ("lmstudio_url", "LM Studio URL","text", None, "http://localhost:1234"),
     ]),
     ("OCR", [
+        ("disable_ocr",    "Disable OCR",      "toggle", None, False),
         ("ocr_lang",       "OCR Language",     "text",   None, "eng"),
         ("force_ocr",      "Force OCR",        "toggle", None, False),
         ("ocr_negative",   "OCR Negative",     "toggle", None, False),
+        ("split_spreads",  "Split Spreads",    "toggle", None, False),
         ("render_dpi",     "Render DPI",       "choice", [
             (150, "150"), (200, "200"), (300, "300"), (400, "400"),
         ], 300),
@@ -78,6 +80,7 @@ TABS = [
         ("storage_backend", "Storage Backend",  "choice", [
             ("faiss",       "FAISS (default)"),
             ("sqlite-vec",  "SQLite-vec"),
+            ("sqlite-doc",  "SQLite-doc (document-aware)"),
         ], "faiss"),
         ("chunk_size",      "Chunk Size",       "choice", [
             (500, "500"), (1000, "1000"), (1500, "1500"), (2000, "2000"), (3000, "3000"),
@@ -91,6 +94,12 @@ TABS = [
         ("min_chunk_length","Min Chunk Length",  "choice", [
             (20, "20"), (50, "50"), (100, "100"),
         ], 50),
+        ("code_chunk_size", "Code Chunk Size",  "choice", [
+            (1500, "1500"), (2000, "2000"), (3000, "3000"), (4000, "4000"), (5000, "5000"),
+        ], 3000),
+        ("code_overlap",    "Code Overlap",     "choice", [
+            (100, "100"), (200, "200"), (300, "300"), (500, "500"),
+        ], 200),
     ]),
 ]
 
