@@ -81,6 +81,7 @@ class EditorTUI:
         src_dict = rag.get_index_sources(self.selected_index)
         self.sources = sorted(src_dict.items(), key=lambda x: x[0])
 
+
     def run(self):
         import curses, struct, fcntl, termios, time
         try:
@@ -269,6 +270,33 @@ class EditorTUI:
                 self.confirm_cursor = 1
                 self.confirming = True
                 return True
+
+        if ch == ord('e') and self.mode == self.MODE_SOURCE:
+            if not self.sources:
+                return True
+            src_name, src_count = self.sources[self.cursor]
+            output_dir = os.path.expanduser(f"~/rag-export/{self.selected_index}")
+            try:
+                result = _rag().export_source(self.selected_index, src_name, output_dir)
+                self.status_msg = f"Exported '{src_name}' -> {output_dir}"
+                self.status_color = 4  # green
+            except Exception as e:
+                self.status_msg = f"Export failed: {e}"
+                self.status_color = 5  # red
+            return True
+
+        if ch == ord('E') and self.mode == self.MODE_SOURCE:
+            output_dir = os.path.expanduser(f"~/rag-export/{self.selected_index}")
+            try:
+                result = _rag().export_index(self.selected_index, output_dir)
+                self.status_msg = f"Exported {result['sources_exported']} source(s) -> {output_dir}"
+                self.status_color = 4  # green
+                if result['skipped']:
+                    self.status_msg += f" ({len(result['skipped'])} skipped)"
+            except Exception as e:
+                self.status_msg = f"Export all failed: {e}"
+                self.status_color = 5  # red
+            return True
 
         if ch == ord('u') and self.mode == self.MODE_INDEX and n > 0:
             idx = self.indexes[self.cursor]
@@ -502,6 +530,7 @@ class EditorTUI:
         row = content_start
         if self.mode == self.MODE_INDEX:
             title = "INDEX EDITOR"
+            title_attr = self._attr(3, curses.A_BOLD)
         else:
             idx_info = None
             for ix in self.indexes:
@@ -513,9 +542,10 @@ class EditorTUI:
                 title = f"{idx_info['name']} ({idx_info['n_files']} files, {idx_info['n_chunks']:,} chunks){lock_str}"
             else:
                 title = self.selected_index or "Sources"
+            title_attr = self._attr(3, curses.A_BOLD)
 
         try:
-            stdscr.addstr(row, 3, title[:w-6], self._attr(3, curses.A_BOLD))
+            stdscr.addstr(row, 3, title[:w-6], title_attr)
         except curses.error:
             pass
 
@@ -633,7 +663,7 @@ class EditorTUI:
         if self.mode == self.MODE_INDEX:
             help_text = "  Enter=view  d=delete  r=rename  l=lock  u=unlock  h=hash  q/Esc=exit"
         else:
-            help_text = "  d=remove source  Backspace=back  q/Esc=exit"
+            help_text = "  d=remove  e=export  E=export all  Backspace=back  q/Esc=exit"
         try:
             stdscr.addstr(help_row, 2, help_text[:w-4], self._attr(6))
         except curses.error:
@@ -644,7 +674,6 @@ class EditorTUI:
             self._draw_confirm(h, w)
         if self.renaming:
             self._draw_rename(h, w)
-
         stdscr.refresh()
 
     def _draw_confirm(self, h, w):
@@ -754,6 +783,7 @@ class EditorTUI:
             pass
 
 
+
 # ── Tkinter GUI Dialog ──────────────────────────────────────────────────────
 
 class EditorDialog:
@@ -859,6 +889,14 @@ class EditorDialog:
         self.remove_btn = ttk.Button(btn_frame, text="Remove Source", style='Danger.TButton',
                                       command=self._remove_source)
         self.remove_btn.pack(side='right', padx=2)
+
+        self.export_all_btn = ttk.Button(btn_frame, text="Export All", style='Editor.TButton',
+                                          command=self._export_all)
+        self.export_all_btn.pack(side='right', padx=2)
+
+        self.export_btn = ttk.Button(btn_frame, text="Export Source", style='Editor.TButton',
+                                      command=self._export_source)
+        self.export_btn.pack(side='right', padx=2)
 
         # Status
         self.status_var = tk.StringVar(value="Ready")
@@ -1067,6 +1105,60 @@ class EditorDialog:
             self._notify_change()
         except Exception as e:
             messagebox.showerror("Error", str(e), parent=self.win)
+
+    def _export_source(self):
+        """Export the selected source to a directory."""
+        from tkinter import filedialog
+        sel = self.index_list.curselection()
+        if not sel:
+            self.status_var.set("Select an index first")
+            return
+        idx = self._indexes[sel[0]]
+
+        src_sel = self.source_list.curselection()
+        if not src_sel:
+            self.status_var.set("Select a source to export")
+            return
+        src_name = self._sources[src_sel[0]]['source']
+
+        output_dir = filedialog.askdirectory(
+            title=f"Export '{src_name}' to...",
+            initialdir=os.path.expanduser(f"~/rag-export/{idx['name']}"),
+            parent=self.win)
+        if not output_dir:
+            return
+
+        try:
+            result = _rag().export_source(idx['name'], src_name, output_dir)
+            self.status_var.set(
+                f"Exported '{src_name}' ({result['chunks_exported']} chunks) -> {output_dir}")
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e), parent=self.win)
+
+    def _export_all(self):
+        """Export all sources from the selected index."""
+        from tkinter import filedialog
+        sel = self.index_list.curselection()
+        if not sel:
+            self.status_var.set("Select an index first")
+            return
+        idx = self._indexes[sel[0]]
+
+        output_dir = filedialog.askdirectory(
+            title=f"Export all sources from '{idx['name']}' to...",
+            initialdir=os.path.expanduser(f"~/rag-export/{idx['name']}"),
+            parent=self.win)
+        if not output_dir:
+            return
+
+        try:
+            result = _rag().export_index(idx['name'], output_dir)
+            msg = f"Exported {result['sources_exported']} source(s) -> {output_dir}"
+            if result['skipped']:
+                msg += f" ({len(result['skipped'])} skipped)"
+            self.status_var.set(msg)
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e), parent=self.win)
 
 
 # ── CLI entry point ─────────────────────────────────────────────────────────

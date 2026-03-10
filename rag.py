@@ -18,11 +18,18 @@ from typing import List, Optional
 import rag_settings
 import rag_backends
 
-# Force CPU-only BEFORE any ML imports
+# Force CPU-only BEFORE any ML imports — but don't block XPU if EasyOCR
+# GPU backend might be needed (env vars can't be un-done after torch imports)
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["ONEAPI_DEVICE_SELECTOR"] = "opencl:cpu"
-os.environ["SYCL_DEVICE_FILTER"] = ""
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Only force CPU for SYCL/oneAPI if EasyOCR GPU won't be needed
+_ocr_may_use_gpu = (
+    rag_settings.get('ocr_backend') == 'easyocr'
+    and not rag_settings.get('disable_ocr')
+)
+if not _ocr_may_use_gpu and not rag_settings.get('gpu_indexing'):
+    os.environ["ONEAPI_DEVICE_SELECTOR"] = "opencl:cpu"
+    os.environ["SYCL_DEVICE_FILTER"] = ""
 # Offline-first: never contact HF Hub unless model isn't cached
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -264,6 +271,111 @@ def delete_index(index_name, force=False):
     # If it was an external index, unregister it
     rag_settings.remove_external_index(index_dir)
 
+# ── Export ───────────────────────────────────────────────────────────────────
+
+def _export_filename(source_name):
+    """Sanitize source name into a safe filename."""
+    name = source_name.replace('/', '__').replace('\\', '__')
+    name = name.replace(' ', '_')
+    name = re.sub(r'[<>:"|?*\x00-\x1f]', '', name)
+    name = name.strip('. ')
+    if not name:
+        name = 'unnamed'
+    # Always use .txt — export produces plain text regardless of original format
+    root, ext = os.path.splitext(name)
+    if root:
+        name = root + '.txt'
+    else:
+        name += '.txt'
+    return name
+
+
+def export_source(index_name, source_name, output_dir, chunks_mode=False):
+    """Export one source from an index to a file on disk.
+
+    Returns dict with files_written, source, chunks_exported.
+    """
+    index_dir = resolve_index_dir(index_name)
+    backend_type = rag_backends.detect_backend(index_dir)
+    backend = rag_backends.get_backend(index_dir, backend_type)
+
+    os.makedirs(output_dir, exist_ok=True)
+    filename = _export_filename(source_name)
+    out_path = os.path.join(output_dir, filename)
+
+    if backend_type == 'sqlite-doc':
+        if chunks_mode:
+            chunks = backend.get_document_chunks(source_name)
+            if not chunks:
+                raise FileNotFoundError(f"Source '{source_name}' not found in index '{index_name}'")
+            lines = []
+            for c in chunks:
+                lines.append(f"=== {source_name} (chunk {c['chunk']}/{c['of']}) ===")
+                lines.append(c['text'])
+                lines.append('')
+            text = '\n'.join(lines)
+            chunk_count = len(chunks)
+        else:
+            doc = backend.get_document(source_name)
+            if not doc:
+                raise FileNotFoundError(f"Source '{source_name}' not found in index '{index_name}'")
+            text = doc['full_text']
+            chunk_count = len(backend.get_document_chunks(source_name))
+    else:
+        # faiss / sqlite-vec: filter chunks by source
+        all_chunks = backend.get_chunks()
+        chunks = [c for c in all_chunks if c['source'] == source_name]
+        if not chunks:
+            raise FileNotFoundError(f"Source '{source_name}' not found in index '{index_name}'")
+        chunks.sort(key=lambda c: c.get('chunk', 0))
+        chunk_count = len(chunks)
+        if chunks_mode:
+            lines = []
+            for c in chunks:
+                lines.append(f"=== {source_name} (chunk {c.get('chunk', '?')}/{c.get('of', '?')}) ===")
+                lines.append(c['text'])
+                lines.append('')
+            text = '\n'.join(lines)
+        else:
+            text = '\n\n'.join(c['text'] for c in chunks)
+
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+    return {'files_written': [out_path], 'source': source_name, 'chunks_exported': chunk_count}
+
+
+def export_index(index_name, output_dir, source_filter=None, chunks_mode=False):
+    """Export multiple sources from an index to files on disk.
+
+    Returns dict with sources_exported, files_written, skipped.
+    """
+    index_dir = resolve_index_dir(index_name)
+    backend_type = rag_backends.detect_backend(index_dir)
+    backend = rag_backends.get_backend(index_dir, backend_type)
+
+    if backend_type == 'sqlite-doc':
+        docs = backend.list_documents()
+        source_names = [d['source'] for d in docs]
+    else:
+        sources = get_index_sources(index_name)
+        source_names = list(sources.keys())
+
+    if source_filter:
+        source_names = [s for s in source_names if source_filter in s]
+
+    files_written = []
+    skipped = []
+    for src in source_names:
+        try:
+            result = export_source(index_name, src, output_dir, chunks_mode=chunks_mode)
+            files_written.extend(result['files_written'])
+        except Exception as e:
+            skipped.append({'source': src, 'error': str(e)})
+
+    return {'sources_exported': len(files_written), 'files_written': files_written, 'skipped': skipped}
+
+
 # ── Document extraction (ideas from bulk_convert.py) ──
 
 def sanitize_text(s: str) -> str:
@@ -275,6 +387,98 @@ def sanitize_text(s: str) -> str:
     return s
 
 _ocr_lang = rag_settings.get('ocr_lang')  # module-level OCR language, set via --ocr-lang or GUI
+
+# ── OCR backend availability detection ──
+
+def _check_tesseract():
+    """Check if tesseract is available."""
+    import shutil
+    return shutil.which('tesseract') is not None
+
+def _check_easyocr():
+    """Check if easyocr is importable (without triggering GPU init)."""
+    import importlib.util
+    return importlib.util.find_spec('easyocr') is not None
+
+HAS_TESSERACT = _check_tesseract()
+HAS_EASYOCR = _check_easyocr()
+
+# ── EasyOCR lazy reader (GPU-accelerated) ──
+
+_easyocr_reader = None
+_easyocr_langs = None
+
+def _get_easyocr_reader(langs=None):
+    """Lazy-load EasyOCR reader. Reuses across calls, recreates if language changes."""
+    global _easyocr_reader, _easyocr_langs
+    if langs is None:
+        langs = ['en']
+    if _easyocr_reader is not None and _easyocr_langs == langs:
+        return _easyocr_reader
+    _prepare_env_for_device('xpu')
+    import easyocr
+    _easyocr_reader = easyocr.Reader(langs, gpu=True, verbose=False)
+    _easyocr_langs = langs
+    device = getattr(_easyocr_reader, 'device', 'unknown')
+    print(f"EasyOCR initialized on device: {device}", file=sys.stderr)
+    return _easyocr_reader
+
+def _unload_easyocr():
+    global _easyocr_reader, _easyocr_langs
+    if _easyocr_reader is not None:
+        try:
+            for component in ('detector', 'recognizer'):
+                net = getattr(_easyocr_reader, component, None)
+                if net is not None:
+                    net.cpu()
+        except Exception:
+            pass
+        del _easyocr_reader
+        _easyocr_reader = None
+        _easyocr_langs = None
+        _release_gpu_memory()
+
+# Tesseract lang code -> EasyOCR lang code mapping (common ones)
+_TESS_TO_EASYOCR = {
+    'eng': 'en', 'fra': 'fr', 'deu': 'de', 'spa': 'es', 'ita': 'it',
+    'por': 'pt', 'nld': 'nl', 'pol': 'pl', 'rus': 'ru', 'ukr': 'uk',
+    'ara': 'ar', 'hin': 'hi', 'ben': 'bn', 'jpn': 'ja', 'kor': 'ko',
+    'chi_sim': 'ch_sim', 'chi_tra': 'ch_tra', 'tha': 'th', 'vie': 'vi',
+    'tur': 'tr', 'ces': 'cs', 'ron': 'ro', 'hun': 'hu', 'fin': 'fi',
+    'swe': 'sv', 'nor': 'no', 'dan': 'da', 'heb': 'he', 'ind': 'id',
+    'msa': 'ms', 'tgl': 'tl', 'swa': 'sw', 'lat': 'la',
+}
+
+def _tess_lang_to_easyocr(tess_lang):
+    """Convert tesseract language code(s) to EasyOCR language list."""
+    langs = []
+    for code in tess_lang.split('+'):
+        code = code.strip()
+        mapped = _TESS_TO_EASYOCR.get(code, code)
+        if mapped not in langs:
+            langs.append(mapped)
+    return langs
+
+_ocr_backend_override = None  # None = use settings, 'tesseract'/'easyocr' = CLI override
+
+def get_ocr_backend():
+    """Get the active OCR backend, respecting overrides and availability."""
+    if _ocr_backend_override is not None:
+        backend = _ocr_backend_override
+    else:
+        backend = rag_settings.get('ocr_backend')
+    # Fall back if chosen backend is unavailable
+    if backend == 'easyocr' and not HAS_EASYOCR:
+        if HAS_TESSERACT:
+            print("WARNING: EasyOCR not available, falling back to Tesseract", file=sys.stderr)
+            return 'tesseract'
+        return None
+    if backend == 'tesseract' and not HAS_TESSERACT:
+        if HAS_EASYOCR:
+            print("WARNING: Tesseract not available, falling back to EasyOCR", file=sys.stderr)
+            return 'easyocr'
+        return None
+    return backend
 
 def set_ocr_lang(lang: str):
     """Set the Tesseract language for all OCR operations.
@@ -346,12 +550,28 @@ def _split_spread(img):
     return [left, right]
 
 def _ocr_single(img) -> str:
-    """OCR a single page image (no splitting). Handles negative inversion."""
-    import pytesseract
+    """OCR a single page image (no splitting). Handles negative inversion.
+    Dispatches to tesseract or easyocr based on settings."""
     from PIL import ImageOps
     if rag_settings.get('ocr_negative'):
         img = ImageOps.invert(img.convert('RGB'))
-    return pytesseract.image_to_string(img, lang=_ocr_lang)
+
+    backend = get_ocr_backend()
+    if backend is None:
+        print("WARNING: No OCR backend available (install tesseract or easyocr)", file=sys.stderr)
+        return ""
+
+    if backend == 'easyocr':
+        import numpy as np
+        lang = _ocr_lang or 'eng'
+        easyocr_langs = _tess_lang_to_easyocr(lang)
+        reader = _get_easyocr_reader(easyocr_langs)
+        img_array = np.array(img.convert('RGB'))
+        results = reader.readtext(img_array)
+        return '\n'.join(text for _, text, _ in results)
+    else:
+        import pytesseract
+        return pytesseract.image_to_string(img, lang=_ocr_lang or 'eng')
 
 def ocr_image(img) -> str:
     """OCR a PIL Image using Tesseract. Uses module-level _ocr_lang setting.
@@ -590,6 +810,56 @@ def extract_text(path: str):
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         text = f.read()
     return (sanitize_text(text), False) if text.strip() else (None, False)
+
+def _probe_needs_ocr(path: str) -> bool:
+    """Quick check if a file will likely need OCR. Used to sort queues
+    so text-layer files process first. Does NOT extract — just peeks."""
+    ext = os.path.splitext(path)[1].lower()
+    # Pure text files never need OCR
+    if ext in ('.txt', '.md', '.rst', '.mobi'):
+        return False
+    # Images always need OCR
+    if ext in ('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.pbm', '.pgm', '.ppm', '.pnm'):
+        return True
+    # TIFF always needs OCR
+    if ext in ('.tiff', '.tif'):
+        return True
+    # PDF: check first 3 pages for text
+    if ext == '.pdf':
+        try:
+            import fitz
+            with fitz.open(path) as doc:
+                for i, page in enumerate(doc):
+                    if i >= 3:
+                        break
+                    if page.get_text("text").strip():
+                        return False
+            return True  # no text in first 3 pages
+        except Exception:
+            return True
+    # EPUB: check if any HTML items have text
+    if ext == '.epub':
+        try:
+            import ebooklib
+            from ebooklib import epub
+            from bs4 import BeautifulSoup
+            book = epub.read_epub(path, options={'ignore_ncx': True})
+            for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+                soup = BeautifulSoup(item.get_content(), 'html.parser')
+                if soup.get_text(strip=True):
+                    return False
+            return True  # no text found — image-only epub
+        except Exception:
+            return True
+    # DjVu: try text extraction
+    if ext in ('.djvu', '.djv'):
+        try:
+            import subprocess
+            r = subprocess.run(['djvutxt', path], capture_output=True, text=True, timeout=5)
+            return not r.stdout.strip()
+        except Exception:
+            return True
+    return False
 
 EXTRACTORS = {
     '.pdf': extract_pdf, '.epub': extract_epub, '.mobi': extract_mobi,
@@ -855,8 +1125,47 @@ def chunk_code(text: str, filepath: str, chunk_size: int = None,
 
 _model = None
 
-_model_name = None  # tracks which model is currently loaded
-_model_device = None  # tracks which device model is on
+_model_name = None
+_model_device = None
+
+def _resolve_embedding_device(gpu_flag=None):
+    use_gpu = gpu_flag if gpu_flag is not None else rag_settings.get('gpu_indexing')
+    if not use_gpu:
+        return 'cpu'
+    device = _detect_best_device()
+    if device == 'cpu':
+        print("WARNING: --gpu requested but no GPU detected, falling back to CPU", file=sys.stderr)
+    return device
+
+def _resolve_embedding_model_name():
+    backend = rag_settings.get('embedding_backend')
+    model = rag_settings.get('embedding_model') if backend == 'local' else rag_settings.get('api_model')
+    return backend, model
+
+def _save_index_metadata(index_dir, meta):
+    with open(os.path.join(index_dir, "meta.json"), 'w') as f:
+        json.dump(meta, f, indent=2)
+    save_index_integrity(index_dir)
+
+def _auto_lock_index(index_dir):
+    lock_path = os.path.join(index_dir, ".locked")
+    if not os.path.exists(lock_path):
+        with open(lock_path, 'w') as f:
+            f.write("locked\n")
+
+def _release_gpu_memory():
+    gc.collect()
+    try:
+        import torch
+        if hasattr(torch, 'xpu') and torch.xpu.is_available():
+            torch.xpu.synchronize()
+            torch.xpu.empty_cache()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    gc.collect()
 
 def _detect_best_device():
     """Auto-detect best available device: xpu > cuda > cpu.
@@ -867,7 +1176,6 @@ def _detect_best_device():
             saved[key] = os.environ.pop(key)
     try:
         import torch
-        # torch caches device state, need to re-probe after env change
         if hasattr(torch, 'xpu') and torch.xpu.is_available() and torch.xpu.device_count() > 0:
             return 'xpu'
         if torch.cuda.is_available() and torch.cuda.device_count() > 0:
@@ -875,29 +1183,73 @@ def _detect_best_device():
     except Exception:
         pass
     finally:
-        # Restore env vars (will be cleared again if GPU is selected)
         os.environ.update(saved)
     return 'cpu'
 
+_DEVICE_ENV = {
+    'cpu': {
+        'set': {"CUDA_VISIBLE_DEVICES": "", "ONEAPI_DEVICE_SELECTOR": "opencl:cpu"},
+        'remove': [],
+    },
+    'xpu': {
+        'set': {},
+        'remove': ["CUDA_VISIBLE_DEVICES", "ONEAPI_DEVICE_SELECTOR", "SYCL_DEVICE_FILTER"],
+    },
+    'cuda': {
+        'set': {"ONEAPI_DEVICE_SELECTOR": "opencl:cpu"},
+        'remove': ["CUDA_VISIBLE_DEVICES"],
+    },
+}
+
 def _prepare_env_for_device(device):
-    """Adjust environment variables for the target device."""
-    if device == 'cpu':
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        os.environ["ONEAPI_DEVICE_SELECTOR"] = "opencl:cpu"
-    elif device == 'xpu':
-        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-        os.environ.pop("ONEAPI_DEVICE_SELECTOR", None)
-        os.environ.pop("SYCL_DEVICE_FILTER", None)
-    elif device == 'cuda':
-        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-        os.environ["ONEAPI_DEVICE_SELECTOR"] = "opencl:cpu"
+    env_config = _DEVICE_ENV.get(device, _DEVICE_ENV['cpu'])
+    for key in env_config['remove']:
+        os.environ.pop(key, None)
+    os.environ.update(env_config['set'])
+
+def _suppress_library_noise():
+    import warnings
+    warnings.filterwarnings('ignore', message='.*UNEXPECTED.*')
+    import logging
+    logging.getLogger('sentence_transformers').setLevel(logging.ERROR)
+    logging.getLogger('transformers').setLevel(logging.ERROR)
+    logging.getLogger('huggingface_hub').setLevel(logging.ERROR)
+    os.environ["TQDM_DISABLE"] = "1"
+
+def _load_from_cache(model_name, device):
+    """Load model from local cache with C-level stdout/stderr suppressed."""
+    from sentence_transformers import SentenceTransformer
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull_fd, 1)
+    os.dup2(devnull_fd, 2)
+    try:
+        model = SentenceTransformer(model_name, device=device)
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.dup2(saved_stderr, 2)
+        os.close(saved_stdout)
+        os.close(saved_stderr)
+        os.close(devnull_fd)
+    return model
+
+def _download_model(model_name, device):
+    from sentence_transformers import SentenceTransformer
+    os.environ.pop("HF_HUB_OFFLINE", None)
+    os.environ.pop("TRANSFORMERS_OFFLINE", None)
+    os.environ.pop("TQDM_DISABLE", None)
+    model = SentenceTransformer(model_name, device=device)
+    os.environ["TQDM_DISABLE"] = "1"
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    return model
 
 def _get_model(model_name=None, device='cpu'):
     global _model, _model_name, _model_device
     if model_name is None:
         model_name = rag_settings.get('embedding_model')
 
-    # If a different model or device is requested, unload current one
     if _model is not None and (_model_name != model_name or _model_device != device):
         print(f"Switching model: '{_model_name}' ({_model_device}) -> '{model_name}' ({device})", file=sys.stderr)
         del _model
@@ -907,74 +1259,50 @@ def _get_model(model_name=None, device='cpu'):
         gc.collect()
 
     if _model is None:
-        import warnings
-        warnings.filterwarnings('ignore', message='.*UNEXPECTED.*')
-        import logging
-        logging.getLogger('sentence_transformers').setLevel(logging.ERROR)
-        logging.getLogger('transformers').setLevel(logging.ERROR)
-        logging.getLogger('huggingface_hub').setLevel(logging.ERROR)
-        # Suppress all progress bars and load reports
-        os.environ["TQDM_DISABLE"] = "1"
-
+        _suppress_library_noise()
         _prepare_env_for_device(device)
 
-        from sentence_transformers import SentenceTransformer
         import torch
         if device == 'cpu':
             torch.set_num_threads(min(8, os.cpu_count() or 4))
 
         dev_label = device.upper()
 
-        # Try loading from local cache first (no network)
         try:
             print(f"Loading embedding model '{model_name}' ({dev_label}, local cache)...", file=sys.stderr)
-            # Suppress the BertModel LOAD REPORT (writes to C-level fd, not Python streams)
-            _saved_stdout = os.dup(1)
-            _saved_stderr = os.dup(2)
-            _devnull_fd = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(_devnull_fd, 1)
-            os.dup2(_devnull_fd, 2)
-            try:
-                _model = SentenceTransformer(model_name, device=device)
-            finally:
-                os.dup2(_saved_stdout, 1)
-                os.dup2(_saved_stderr, 2)
-                os.close(_saved_stdout)
-                os.close(_saved_stderr)
-                os.close(_devnull_fd)
+            _model = _load_from_cache(model_name, device)
             _model_name = model_name
             _model_device = device
             print(f"Model ready on {dev_label} (offline).", file=sys.stderr)
         except Exception:
-            # Model not cached — allow one-time download
             print(f"Model '{model_name}' not cached locally. Downloading...", file=sys.stderr)
-            os.environ.pop("HF_HUB_OFFLINE", None)
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
-            os.environ.pop("TQDM_DISABLE", None)  # show download progress
-            _model = SentenceTransformer(model_name, device=device)
+            _model = _download_model(model_name, device)
             _model_name = model_name
             _model_device = device
-            os.environ["TQDM_DISABLE"] = "1"
-            # Re-enable offline mode for future loads
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
             print(f"Model downloaded and cached on {dev_label}. Future loads will be offline.", file=sys.stderr)
     return _model
 
-def _unload_model():
+def _unload_embedding_model():
     global _model, _model_device
-    # API backends have no local model to unload
     if rag_settings.get('embedding_backend') in ('ollama', 'lmstudio'):
         return
     if _model is not None:
         was_gpu = _model_device and _model_device != 'cpu'
+        if was_gpu:
+            try:
+                _model.cpu()
+            except Exception:
+                pass
         del _model
         _model = None
         _model_device = None
-        gc.collect()
-        # Restore CPU env vars after GPU use
         if was_gpu:
+            _release_gpu_memory()
             _prepare_env_for_device('cpu')
+        else:
+            gc.collect()
+
+_unload_model = _unload_embedding_model
 
 def embed_texts_api(texts: List[str], backend: str, override_model=None, override_url=None):
     """Embed texts via Ollama or LM Studio OpenAI-compatible API.
@@ -1227,10 +1555,15 @@ def cmd_index(args):
         args.overlap = rag_settings.get('overlap')
 
     # Apply --no-ocr: runtime override so all extractors see it
-    global _ocr_disabled_override
+    global _ocr_disabled_override, _ocr_backend_override
     no_ocr = args.no_ocr if args.no_ocr is not None else rag_settings.get('disable_ocr')
     if no_ocr:
         _ocr_disabled_override = True
+
+    # Apply --ocr-backend override
+    ocr_backend_arg = getattr(args, 'ocr_backend', None)
+    if ocr_backend_arg is not None:
+        _ocr_backend_override = ocr_backend_arg
 
     force_ocr = args.ocr if args.ocr is not None else rag_settings.get('force_ocr')
     if no_ocr:
@@ -1255,12 +1588,23 @@ def cmd_index(args):
         opts.append("OCR disabled")
     elif force_ocr:
         opts.append("force-OCR")
+    active_backend = get_ocr_backend()
+    if active_backend and not no_ocr:
+        opts.append(f"backend={active_backend}")
     if ocr_neg and not no_ocr:
         opts.append("negative")
     if split_sp:
         opts.append("split-spreads")
     if opts:
         print(f"OCR mode: {', '.join(opts)}")
+
+    # Sort: text-layer files first, OCR-needing files last
+    if not no_ocr:
+        print("Probing files for text layers...", end="", flush=True)
+        ocr_flags = {f: _probe_needs_ocr(f) for f in deduped_files}
+        deduped_files.sort(key=lambda f: ocr_flags[f])
+        n_ocr = sum(1 for v in ocr_flags.values() if v)
+        print(f" {len(deduped_files) - n_ocr} text-layer, {n_ocr} likely OCR")
 
     print(f"Indexing {len(deduped_files)} files from {source_dir}")
 
@@ -1308,32 +1652,22 @@ def cmd_index(args):
         print("No content extracted!")
         return 1
 
-    # Resolve embedding device
-    use_gpu = args.gpu if args.gpu is not None else rag_settings.get('gpu_indexing')
-    device = _detect_best_device() if use_gpu else 'cpu'
-    if use_gpu and device == 'cpu':
-        print("WARNING: --gpu requested but no GPU detected, falling back to CPU", file=sys.stderr)
-
+    device = _resolve_embedding_device(args.gpu)
     print(f"\nNew: {len(all_chunks)} chunks. Embedding ({device.upper()})...")
 
-    # embed new chunks
     texts = [c['text'] for c in all_chunks]
     embeddings = embed_texts(texts, device=device)
-    _unload_model()
+    _unload_embedding_model()
 
     dim = embeddings.shape[1]
 
-    # Resolve storage backend
     storage_type = getattr(args, 'storage_backend', None) or rag_settings.get('storage_backend')
-    # If appending, use whatever backend already exists
     if args.append:
         storage_type = rag_backends.detect_backend(index_dir)
     backend = rag_backends.get_backend(index_dir, storage_type)
 
-    # merge hashes
     all_hashes = {**existing_hashes, **file_hashes_map}
 
-    # append or full write
     existing_chunks = []
     docs_arg = all_documents if storage_type == 'sqlite-doc' else None
     if args.append and backend.exists():
@@ -1349,10 +1683,8 @@ def cmd_index(args):
         else:
             backend.save(all_chunks, embeddings, all_hashes)
 
-    # metadata last — derived from actual saved data
     n_sources = len(set(c['source'] for c in all_chunks))
-    emb_backend = rag_settings.get('embedding_backend')
-    emb_model = rag_settings.get('embedding_model') if emb_backend == 'local' else rag_settings.get('api_model')
+    emb_backend, emb_model = _resolve_embedding_model_name()
     meta = {
         'source_dir': source_dir if not existing_chunks else 'multiple',
         'chunk_size': args.chunk_size,
@@ -1364,19 +1696,14 @@ def cmd_index(args):
         'embedding_backend': emb_backend,
         'embedding_model': emb_model,
     }
-    with open(os.path.join(index_dir, "meta.json"), 'w') as f:
-        json.dump(meta, f, indent=2)
-    save_index_integrity(index_dir)
-
-    # Auto-lock after successful index
-    lock_file = os.path.join(index_dir, ".locked")
-    if not os.path.exists(lock_file):
-        with open(lock_file, 'w') as f:
-            f.write("locked\n")
+    _save_index_metadata(index_dir, meta)
+    _auto_lock_index(index_dir)
 
     # Restore settings overrides
     _ocr_disabled_override = None
+    _ocr_backend_override = None
     _split_spreads_override = None
+    _unload_easyocr()
     if ocr_neg != rag_settings.get('ocr_negative'):
         cfg = rag_settings.load()
         cfg['ocr_negative'] = not ocr_neg
@@ -1385,6 +1712,118 @@ def cmd_index(args):
     print(f"\nDone! Index '{args.name}' → {index_dir} [AUTO-LOCKED]")
     print(f"  {len(all_chunks)} chunks from {n_sources} files, {dim}-dim embeddings")
     return 0
+
+def cmd_add(args):
+    """Add a single file to an index (create index if needed)."""
+    import numpy as np
+
+    fpath = os.path.abspath(args.file)
+    if not os.path.isfile(fpath):
+        print(f"File not found: {fpath}")
+        return 1
+
+    ext = os.path.splitext(fpath)[1].lower()
+    if ext not in EXTRACTORS:
+        print(f"Unsupported file type: {ext}")
+        print(f"Supported: {', '.join(sorted(EXTRACTORS.keys()))}")
+        return 1
+
+    fname = os.path.basename(fpath)
+    index_dir = os.path.join(rag_settings.get_data_dir(), args.name)
+    meta_path = os.path.join(index_dir, "meta.json")
+    index_exists = os.path.exists(meta_path)
+
+    # Resolve storage backend
+    storage_type = getattr(args, 'storage_backend', None) or rag_settings.get('storage_backend')
+    if index_exists:
+        storage_type = rag_backends.detect_backend(index_dir)
+
+    os.makedirs(index_dir, exist_ok=True)
+
+    # Duplicate check by SHA-256 hash
+    fhash = file_hash(fpath)
+    if index_exists:
+        existing_hashes = load_index_hashes(index_dir)
+        if fhash in existing_hashes:
+            print(f"Already indexed: {fname} (duplicate of '{existing_hashes[fhash]}')")
+            return 0
+
+    # Extract text
+    text, is_ocr = extract_file(fpath, force_ocr=False)
+    if not text:
+        print(f"No text extracted from {fname}")
+        return 1
+
+    # Chunk
+    chunk_size = args.chunk_size if args.chunk_size is not None else rag_settings.get('chunk_size')
+    overlap = args.overlap if args.overlap is not None else rag_settings.get('overlap')
+    chunks = chunk_text(text, chunk_size, overlap)
+    chunk_dicts = []
+    for ci, chunk in enumerate(chunks):
+        chunk_dicts.append({
+            'text': chunk,
+            'source': fname,
+            'chunk': ci,
+            'of': len(chunks),
+            'ocr': is_ocr,
+        })
+
+    # Document for sqlite-doc backend
+    doc = {
+        'source': fname,
+        'full_text': text,
+        'doc_type': 'book',
+        'language': None,
+        'ocr': is_ocr,
+    }
+
+    device = _resolve_embedding_device(args.gpu)
+    texts = [c['text'] for c in chunk_dicts]
+    embeddings = embed_texts(texts, device=device)
+    _unload_embedding_model()
+
+    dim = embeddings.shape[1]
+
+    backend = rag_backends.get_backend(index_dir, storage_type)
+    docs_arg = [doc] if storage_type == 'sqlite-doc' else None
+
+    if index_exists and backend.exists():
+        if storage_type == 'sqlite-doc':
+            backend.append(chunk_dicts, embeddings, {fhash: fname}, documents=docs_arg)
+        else:
+            backend.append(chunk_dicts, embeddings, {fhash: fname})
+        existing_chunks = backend.get_chunks()
+        n_sources = len(set(c['source'] for c in existing_chunks))
+        n_chunks = len(existing_chunks)
+    else:
+        all_hashes = {fhash: fname}
+        if storage_type == 'sqlite-doc':
+            backend.save(chunk_dicts, embeddings, all_hashes, documents=docs_arg)
+        else:
+            backend.save(chunk_dicts, embeddings, all_hashes)
+        n_sources = 1
+        n_chunks = len(chunk_dicts)
+
+    emb_backend, emb_model = _resolve_embedding_model_name()
+    meta = {
+        'source_dir': 'single-file',
+        'chunk_size': chunk_size,
+        'overlap': overlap,
+        'n_chunks': n_chunks,
+        'n_files': n_sources,
+        'dim': dim,
+        'storage_backend': storage_type,
+        'embedding_backend': emb_backend,
+        'embedding_model': emb_model,
+    }
+    _save_index_metadata(index_dir, meta)
+    _auto_lock_index(index_dir)
+
+    ocr_tag = " [OCR]" if is_ocr else ""
+    action = "Appended" if index_exists else "Created"
+    print(f"{action} '{args.name}': {fname} → {len(chunk_dicts)} chunks{ocr_tag}")
+    return 0
+
 
 def cmd_query(args):
     import numpy as np
@@ -1416,14 +1855,12 @@ def cmd_query(args):
     if resolved['warning']:
         print(resolved['warning'], file=sys.stderr)
 
-    # embed query using the index's model
     q_emb = embed_texts([args.query],
                         override_backend=resolved['backend'],
                         override_model=resolved['model'],
                         override_url=resolved['api_url'])
-    _unload_model()
+    _unload_embedding_model()
 
-    # output
     OCR_NOTE = "[NOTE: This text was produced by OCR and may contain recognition errors — misspellings, garbled characters, or missing words.]\n"
 
     # Use context-aware search for sqlite-doc backends
@@ -2014,6 +2451,22 @@ def cmd_gui(args):
     ttk.Checkbutton(btn_frame, text="No OCR", variable=no_ocr_var).pack(side='right', padx=2)
     gpu_var = tk.BooleanVar(value=rag_settings.get('gpu_indexing'))
     ttk.Checkbutton(btn_frame, text="GPU", variable=gpu_var).pack(side='right', padx=2)
+    # OCR backend selector — grey out unavailable backends
+    ocr_backend_var = tk.StringVar(value=rag_settings.get('ocr_backend'))
+    ocr_backend_values = []
+    if HAS_TESSERACT:
+        ocr_backend_values.append("tesseract")
+    if HAS_EASYOCR:
+        ocr_backend_values.append("easyocr")
+    if not ocr_backend_values:
+        ocr_backend_values.append("(none)")
+        ocr_backend_var.set("(none)")
+    elif ocr_backend_var.get() not in ocr_backend_values:
+        ocr_backend_var.set(ocr_backend_values[0])
+    ocr_backend_combo = ttk.Combobox(btn_frame, textvariable=ocr_backend_var,
+                                      values=ocr_backend_values, width=10, state='readonly')
+    ocr_backend_combo.pack(side='right', padx=2)
+    ttk.Label(btn_frame, text="OCR:").pack(side='right')
 
     # ── progress + log frame ──
     log_frame = ttk.LabelFrame(root, text="Log", padding=8)
@@ -2077,8 +2530,12 @@ def cmd_gui(args):
                 added_files = []
                 new_file_hashes = {}
                 # OCR settings
-                global _ocr_disabled_override, _split_spreads_override
+                global _ocr_disabled_override, _split_spreads_override, _ocr_backend_override
                 disable_ocr = no_ocr_var.get()
+                # Apply OCR backend selection from GUI
+                gui_ocr_backend = ocr_backend_var.get()
+                if gui_ocr_backend and gui_ocr_backend != '(none)':
+                    _ocr_backend_override = gui_ocr_backend
                 if disable_ocr:
                     _ocr_disabled_override = True
                 force_ocr = ocr_var.get() if not disable_ocr else False
@@ -2105,6 +2562,9 @@ def cmd_gui(args):
                     opts.append("OCR disabled")
                 elif force_ocr:
                     opts.append("force-OCR")
+                active_backend = get_ocr_backend()
+                if active_backend and not disable_ocr:
+                    opts.append(f"backend={active_backend}")
                 if neg and not disable_ocr:
                     opts.append("negative")
                 if split_sp:
@@ -2114,6 +2574,15 @@ def cmd_gui(args):
 
                 # Load existing hashes for dedup at index time
                 existing_hashes = load_index_hashes(index_dir)
+
+                # Sort: text-layer files first, OCR-needing files last
+                if not disable_ocr:
+                    root.after(0, lambda: log("Probing files for text layers..."))
+                    ocr_flags = {f: _probe_needs_ocr(f) for f in file_queue}
+                    file_queue.sort(key=lambda f: ocr_flags[f])
+                    n_ocr = sum(1 for v in ocr_flags.values() if v)
+                    n_text = len(file_queue) - n_ocr
+                    root.after(0, lambda: log(f"  {n_text} text-layer first, {n_ocr} likely OCR last"))
 
                 # extract + chunk
                 gui_documents = []  # for sqlite-doc backend
@@ -2167,19 +2636,16 @@ def cmd_gui(args):
                     root.after(0, lambda m=msg: messagebox.showwarning("Nothing indexed", m))
                     return
 
-                # embed
                 if _shutdown.is_set():
                     return
-                use_gpu = gpu_var.get()
-                emb_device = _detect_best_device() if use_gpu else 'cpu'
-                if use_gpu and emb_device == 'cpu':
+                emb_device = _resolve_embedding_device(gpu_var.get())
+                if gpu_var.get() and emb_device == 'cpu':
                     root.after(0, lambda: log("WARNING: GPU requested but not detected, using CPU"))
-                dev_label = emb_device.upper()
-                root.after(0, lambda: log(f"Embedding {len(all_new_chunks)} chunks ({dev_label})..."))
+                root.after(0, lambda: log(f"Embedding {len(all_new_chunks)} chunks ({emb_device.upper()})..."))
                 root.after(0, lambda: progress.config(value=50))
                 texts = [c['text'] for c in all_new_chunks]
                 new_embs = embed_texts(texts, device=emb_device)
-                _unload_model()
+                _unload_embedding_model()
                 dim = new_embs.shape[1]
 
                 root.after(0, lambda: progress.config(value=80))
@@ -2244,10 +2710,8 @@ def cmd_gui(args):
                 all_hashes.update(new_file_hashes)
                 gui_backend.save_hashes(all_hashes)
 
-                # metadata
                 n_sources = len(set(c['source'] for c in final_chunks))
-                emb_backend = rag_settings.get('embedding_backend')
-                emb_model = rag_settings.get('embedding_model') if emb_backend == 'local' else rag_settings.get('api_model')
+                emb_backend, emb_model = _resolve_embedding_model_name()
                 meta = {
                     'source_dir': 'multiple (gui)',
                     'chunk_size': rag_settings.get('chunk_size'),
@@ -2259,15 +2723,8 @@ def cmd_gui(args):
                     'embedding_backend': emb_backend,
                     'embedding_model': emb_model,
                 }
-                with open(os.path.join(index_dir, "meta.json"), 'w') as f:
-                    json.dump(meta, f, indent=2)
-                save_index_integrity(index_dir)
-
-                # Auto-lock
-                lock_path = os.path.join(index_dir, ".locked")
-                if not os.path.exists(lock_path):
-                    with open(lock_path, 'w') as f:
-                        f.write("locked\n")
+                _save_index_metadata(index_dir, meta)
+                _auto_lock_index(index_dir)
 
                 root.after(0, lambda: progress.config(value=100))
                 root.after(0, lambda m=f"Done! '{name}': {len(final_chunks)} chunks from {n_sources} files [AUTO-LOCKED]": log(m))
@@ -2291,7 +2748,9 @@ def cmd_gui(args):
                 nonlocal indexing
                 indexing = False
                 _ocr_disabled_override = None  # reset OCR override
+                _ocr_backend_override = None  # reset backend override
                 _split_spreads_override = None  # reset spread override
+                _unload_easyocr()
                 reset_ocr_lang()
                 # Restore negative setting if we overrode it
                 if neg != _saved_neg:
@@ -2308,9 +2767,22 @@ def cmd_gui(args):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _sync_gui_from_settings():
+        """Refresh all GUI option widgets to match current settings on disk."""
+        no_ocr_var.set(rag_settings.get('disable_ocr'))
+        ocr_var.set(rag_settings.get('force_ocr'))
+        ocr_neg_var.set(rag_settings.get('ocr_negative'))
+        ocr_lang_var.set(rag_settings.get('ocr_lang'))
+        split_var.set(rag_settings.get('split_spreads'))
+        gpu_var.set(rag_settings.get('gpu_indexing'))
+        backend = rag_settings.get('ocr_backend')
+        if backend in ocr_backend_values:
+            ocr_backend_var.set(backend)
+
     def open_settings():
         from rag_settings import SettingsDialog
         SettingsDialog(root)
+        _sync_gui_from_settings()
 
     settings_btn = ttk.Button(action_frame, text="Settings", command=open_settings)
     settings_btn.pack(side='left', padx=2)
@@ -2565,21 +3037,15 @@ def cmd_code(args):
         print("No content extracted!")
         return 1
 
-    # Resolve embedding device
-    use_gpu = args.gpu if args.gpu is not None else rag_settings.get('gpu_indexing')
-    device = _detect_best_device() if use_gpu else 'cpu'
-    if use_gpu and device == 'cpu':
-        print("WARNING: --gpu requested but no GPU detected, falling back to CPU", file=sys.stderr)
-
+    device = _resolve_embedding_device(args.gpu)
     print(f"\n{len(all_chunks)} chunks from {len(documents)} files. Embedding ({device.upper()})...")
 
     texts = [c['text'] for c in all_chunks]
     embeddings = embed_texts(texts, device=device)
-    _unload_model()
+    _unload_embedding_model()
 
     dim = embeddings.shape[1]
 
-    # Always use sqlite-doc for code indexes
     storage_type = 'sqlite-doc'
     if args.append:
         detected = rag_backends.detect_backend(index_dir)
@@ -2598,10 +3064,7 @@ def cmd_code(args):
     else:
         backend.save(all_chunks, embeddings, all_hashes, documents=documents)
 
-    # Write metadata
-    n_sources = len(set(c['source'] for c in all_chunks))
-    emb_backend = rag_settings.get('embedding_backend')
-    emb_model = rag_settings.get('embedding_model') if emb_backend == 'local' else rag_settings.get('api_model')
+    emb_backend, emb_model = _resolve_embedding_model_name()
     meta = {
         'source_dir': project_path,
         'chunk_size': chunk_size,
@@ -2614,15 +3077,8 @@ def cmd_code(args):
         'embedding_model': emb_model,
         'index_type': 'code',
     }
-    with open(os.path.join(index_dir, "meta.json"), 'w') as f:
-        json.dump(meta, f, indent=2)
-    save_index_integrity(index_dir)
-
-    # Auto-lock
-    lock_path = os.path.join(index_dir, ".locked")
-    if not os.path.exists(lock_path):
-        with open(lock_path, 'w') as f:
-            f.write("locked\n")
+    _save_index_metadata(index_dir, meta)
+    _auto_lock_index(index_dir)
 
     print(f"\nDone! Index '{args.name}' -> {index_dir} [AUTO-LOCKED]")
     print(f"  {meta['n_chunks']} chunks from {meta['n_files']} files, {dim}-dim embeddings")
@@ -2756,6 +3212,75 @@ def cmd_sources(args):
     return 0
 
 
+def cmd_export(args):
+    """Export sources from an index to files on disk."""
+    index_dir = resolve_index_dir(args.name)
+    if not _cli_integrity_gate(args.name, index_dir):
+        return 1
+
+    backend_type = rag_backends.detect_backend(index_dir)
+    backend = rag_backends.get_backend(index_dir, backend_type)
+    if not backend.exists():
+        print(f"Index '{args.name}' not found.")
+        return 1
+
+    output_dir = args.output or os.path.join('.', 'rag-export', args.name)
+
+    if args.source:
+        # Single source export
+        try:
+            result = export_source(args.name, args.source, output_dir, chunks_mode=args.chunks)
+        except FileNotFoundError:
+            # Try partial match suggestions
+            if backend_type == 'sqlite-doc':
+                docs = backend.list_documents()
+                matches = [d for d in docs if args.source in d['source']]
+                if matches:
+                    print(f"Source '{args.source}' not found. Did you mean:")
+                    for d in matches[:10]:
+                        print(f"  - {d['source']} ({d['chunk_count']} chunks)")
+                else:
+                    print(f"Source '{args.source}' not found in index '{args.name}'.")
+                    print(f"Use: rag.py sources --name {args.name}")
+            else:
+                sources = get_index_sources(args.name)
+                matches = [s for s in sources if args.source in s]
+                if matches:
+                    print(f"Source '{args.source}' not found. Did you mean:")
+                    for s in matches[:10]:
+                        print(f"  - {s} ({sources[s]} chunks)")
+                else:
+                    print(f"Source '{args.source}' not found in index '{args.name}'.")
+                    print(f"Use: rag.py sources --name {args.name}")
+            return 1
+
+        print(f"Exported '{result['source']}' ({result['chunks_exported']} chunks)")
+        for f in result['files_written']:
+            print(f"  -> {f}")
+        return 0
+    else:
+        # Multi-source export
+        result = export_index(args.name, output_dir,
+                              source_filter=args.filter, chunks_mode=args.chunks)
+        if result['sources_exported'] == 0 and not result['skipped']:
+            if args.filter:
+                print(f"No sources matching '{args.filter}' in index '{args.name}'.")
+            else:
+                print(f"Index '{args.name}' has no sources to export.")
+            return 1
+
+        print(f"Exported {result['sources_exported']} source(s) to {output_dir}")
+        if backend_type != 'sqlite-doc':
+            print(f"  (Note: '{backend_type}' backend — exported from chunk concatenation)")
+        for f in result['files_written']:
+            print(f"  -> {os.path.basename(f)}")
+        if result['skipped']:
+            print(f"Skipped {len(result['skipped'])} source(s):")
+            for s in result['skipped']:
+                print(f"  - {s['source']}: {s['error']}")
+        return 0
+
+
 def cmd_verify(args):
     """Full SHA-256 verification of an index."""
     index_dir = resolve_index_dir(args.name)
@@ -2819,6 +3344,109 @@ def cmd_integrity(args):
     return 0
 
 
+def cmd_acl(args):
+    """Manage API key access control."""
+    import rag_acl
+
+    sub = getattr(args, 'acl_cmd', None)
+
+    if sub is None or sub == 'status':
+        acl = rag_acl.load()
+        state = "ENABLED" if acl['enabled'] else "DISABLED"
+        print(f"Access Control: {state}")
+        clients = acl.get('clients', {})
+        if not clients:
+            print("  No API keys configured.")
+        else:
+            print(f"  {len(clients)} client(s):")
+            for key, client in clients.items():
+                idx = client.get('indexes', '*')
+                idx_str = '*' if idx == '*' else ', '.join(idx) if idx else '(none)'
+                privs = ', '.join(client.get('privileges', []))
+                masked = rag_acl.mask_key(key)
+                print(f"    {masked}  \"{client['name']}\"")
+                print(f"      indexes: {idx_str}")
+                print(f"      privileges: {privs}")
+        return 0
+
+    if sub == 'enable':
+        rag_acl.set_enabled(True)
+        print("Access control ENABLED. MCP clients need RAG_API_KEY to access indexes.")
+        return 0
+
+    if sub == 'disable':
+        rag_acl.set_enabled(False)
+        print("Access control DISABLED. All MCP clients have unrestricted access.")
+        return 0
+
+    if sub == 'create':
+        indexes = args.indexes
+        if indexes != '*':
+            indexes = [s.strip() for s in indexes.split(',') if s.strip()]
+        privileges = None
+        if args.privileges:
+            privileges = [s.strip() for s in args.privileges.split(',') if s.strip()]
+        try:
+            key = rag_acl.create_client(args.name, indexes=indexes, privileges=privileges)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        print(f"Created API key for '{args.name}':")
+        print(f"  {key}")
+        print(f"\nAdd to your MCP client registration:")
+        print(f'  "env": {{"RAG_API_KEY": "{key}"}}')
+        return 0
+
+    if sub == 'revoke':
+        if rag_acl.revoke_client(args.key):
+            print("Key revoked.")
+        else:
+            print("Key not found.", file=sys.stderr)
+            return 1
+        return 0
+
+    if sub == 'rotate':
+        try:
+            new_key = rag_acl.rotate_key(args.key)
+        except KeyError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        print(f"Key rotated. New key:")
+        print(f"  {new_key}")
+        print(f"\nUpdate your MCP client registration with the new key.")
+        return 0
+
+    if sub == 'update':
+        indexes = None
+        if args.indexes is not None:
+            indexes = args.indexes if args.indexes == '*' else \
+                [s.strip() for s in args.indexes.split(',') if s.strip()]
+        privileges = None
+        if args.privileges is not None:
+            privileges = [s.strip() for s in args.privileges.split(',') if s.strip()]
+        try:
+            rag_acl.update_client(args.key, name=args.name,
+                                  indexes=indexes, privileges=privileges)
+        except (KeyError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        print("Client updated.")
+        return 0
+
+    if sub == 'clean':
+        available = get_indexes()
+        changed = rag_acl.clean_stale_indexes(available)
+        if changed:
+            print(f"Cleaned stale index references. {len(available)} active indexes.")
+        else:
+            print(f"No stale references found. {len(available)} active indexes.")
+        return 0
+
+    # Fallback: show status
+    args.acl_cmd = 'status'
+    return cmd_acl(args)
+
+
 def main():
     p = argparse.ArgumentParser(description="RAG-Narock — local RAG for Claude Code (CPU-only)")
     sub = p.add_subparsers(dest='cmd')
@@ -2832,11 +3460,20 @@ def main():
     pi.add_argument('--append', action='store_true', help='Add to existing index without overwriting')
     pi.add_argument('--no-ocr', action='store_true', default=None, help='Disable all OCR (skip image-only files and OCR fallbacks)')
     pi.add_argument('--ocr', action='store_true', default=None, help='Force OCR on all PDFs (ignore text layers)')
+    pi.add_argument('--ocr-backend', choices=['tesseract', 'easyocr'], default=None, help='OCR backend (tesseract=CPU, easyocr=GPU/XPU)')
     pi.add_argument('--ocr-lang', default=None, help='Tesseract language(s) for OCR (e.g. hin, chi_sim, eng+hin)')
     pi.add_argument('--ocr-negative', action='store_true', default=None, help='Invert image colors before OCR (helps with light-on-dark text)')
     pi.add_argument('--split-spreads', action='store_true', default=None, help='Split side-by-side scanned pages before OCR')
     pi.add_argument('--storage-backend', choices=['faiss', 'sqlite-vec', 'sqlite-doc'], default=None, help='Storage backend (default: from settings)')
     pi.add_argument('--gpu', action='store_true', default=None, help='Use GPU for embedding (auto-detect XPU/CUDA)')
+
+    pf = sub.add_parser('add', help='Add a single file to an index')
+    pf.add_argument('file', help='Path to file to index')
+    pf.add_argument('--name', default='default', help='Index name')
+    pf.add_argument('--chunk-size', type=int, default=None, help='Chunk size (default: from settings)')
+    pf.add_argument('--overlap', type=int, default=None, help='Overlap (default: from settings)')
+    pf.add_argument('--storage-backend', choices=['faiss', 'sqlite-vec', 'sqlite-doc'], default=None, help='Storage backend (default: from settings)')
+    pf.add_argument('--gpu', action='store_true', default=None, help='Use GPU for embedding (auto-detect XPU/CUDA)')
 
     pq = sub.add_parser('query', help='Query the index')
     pq.add_argument('query', help='Search query text')
@@ -2902,18 +3539,50 @@ def main():
     pit.add_argument('--accept', action='store_true', help='Suppress integrity warnings')
     pit.add_argument('--rehash', action='store_true', help='Recompute integrity hashes')
 
+    pex = sub.add_parser('export', help='Export sources from an index to files')
+    pex.add_argument('--name', required=True, help='Index name')
+    pex.add_argument('--source', help='Export a single source by name')
+    pex.add_argument('--filter', help='Filter sources by substring match')
+    pex.add_argument('--output', help='Output directory (default: ./rag-export/<index>/)')
+    pex.add_argument('--chunks', action='store_true', help='Export with chunk markers instead of full text')
+
+    pacl = sub.add_parser('acl', help='Manage API key access control')
+    acl_sub = pacl.add_subparsers(dest='acl_cmd')
+    acl_sub.add_parser('status', help='Show ACL status and all clients')
+    acl_sub.add_parser('enable', help='Enable access control')
+    acl_sub.add_parser('disable', help='Disable access control')
+    acl_create = acl_sub.add_parser('create', help='Create a new API key')
+    acl_create.add_argument('--name', required=True, help='Client nickname')
+    acl_create.add_argument('--indexes', default='*',
+        help='Comma-separated index names, or "*" for all (default: *)')
+    acl_create.add_argument('--privileges', default=None,
+        help=f'Comma-separated privileges (default: all). Options: list,query,read,export,index,remove,delete,lock')
+    acl_revoke = acl_sub.add_parser('revoke', help='Revoke an API key')
+    acl_revoke.add_argument('key', help='API key to revoke (rag-...)')
+    acl_rotate = acl_sub.add_parser('rotate', help='Rotate an API key (new key, same permissions)')
+    acl_rotate.add_argument('key', help='API key to rotate')
+    acl_update = acl_sub.add_parser('update', help="Update a client's permissions")
+    acl_update.add_argument('key', help='API key to update')
+    acl_update.add_argument('--name', default=None, help='New nickname')
+    acl_update.add_argument('--indexes', default=None,
+        help='New index list (comma-separated or "*")')
+    acl_update.add_argument('--privileges', default=None,
+        help='New privilege list (comma-separated)')
+    acl_sub.add_parser('clean', help='Remove stale index references from all clients')
+
     args = p.parse_args()
     if not args.cmd:
         p.print_help()
         return 1
 
-    cmds = {'index': cmd_index, 'query': cmd_query, 'list': cmd_list,
+    cmds = {'index': cmd_index, 'add': cmd_add, 'query': cmd_query, 'list': cmd_list,
             'lock': cmd_lock, 'unlock': cmd_unlock, 'delete': cmd_delete,
             'add-external': cmd_add_external, 'move': cmd_move,
             'gui': cmd_gui, 'settings': cmd_settings, 'editor': cmd_editor,
             'code': cmd_code, 'read': cmd_read, 'chunk': cmd_chunk,
             'sources': cmd_sources, 'verify': cmd_verify,
-            'integrity': cmd_integrity}
+            'integrity': cmd_integrity, 'export': cmd_export,
+            'acl': cmd_acl}
     return cmds[args.cmd](args)
 
 if __name__ == '__main__':

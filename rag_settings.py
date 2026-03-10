@@ -20,6 +20,7 @@ Usage:
 
 import os, sys, json
 from pathlib import Path
+import rag_acl
 
 BANNER = r"""
 (()/(   )\    )\ )     )\())   ) (           ( /(
@@ -64,6 +65,10 @@ TABS = [
     ]),
     ("OCR", [
         ("disable_ocr",    "Disable OCR",      "toggle", None, False),
+        ("ocr_backend",    "OCR Backend",      "choice", [
+            ("tesseract", "Tesseract (CPU)"),
+            ("easyocr",   "EasyOCR (GPU/XPU)"),
+        ], "tesseract"),
         ("ocr_lang",       "OCR Language",     "text",   None, "eng"),
         ("force_ocr",      "Force OCR",        "toggle", None, False),
         ("ocr_negative",   "OCR Negative",     "toggle", None, False),
@@ -203,6 +208,16 @@ class SettingsTUI:
         self.has_colors = False
         self.has_flame = False  # 256-color flame gradient
         self.warning_msg = ""
+        self.acl_clients = []
+        self.acl_sel = 0
+        self.acl_naming = False
+        self.acl_name_buf = ""
+        self.acl_name_cur = 0
+        self.acl_editing = False
+        self.acl_edit_key = None
+        self.acl_edit_privs = {}
+        self.acl_edit_idx = 0
+        self.acl_status = ""
 
     def run(self):
         """Launch the TUI. Returns True if settings were saved."""
@@ -269,6 +284,12 @@ class SettingsTUI:
             self._draw()
             ch = stdscr.getch()
 
+            if self.acl_naming:
+                self._handle_acl_naming(ch)
+                continue
+            if self.acl_editing:
+                self._handle_acl_editing(ch)
+                continue
             if self.editing_text:
                 if self._handle_text_edit(ch):
                     continue
@@ -282,6 +303,8 @@ class SettingsTUI:
         return False
 
     def _cur_tab_items(self):
+        if self.tab_idx >= len(TABS):
+            return []
         return TABS[self.tab_idx][1]
 
     def _cur_item(self):
@@ -292,18 +315,30 @@ class SettingsTUI:
 
     def _handle_nav(self, ch):
         import curses
+        total_tabs = len(TABS) + 1  # +1 for ACL tab
+
+        if ch == ord('\t') or ch == 9:
+            self.tab_idx = (self.tab_idx + 1) % total_tabs
+            if self.tab_idx < len(TABS):
+                self.item_idx = min(self.item_idx, len(self._cur_tab_items()) - 1)
+            else:
+                self._refresh_acl()
+            return True
+
+        if ch == curses.KEY_BTAB:
+            self.tab_idx = (self.tab_idx - 1) % total_tabs
+            if self.tab_idx < len(TABS):
+                self.item_idx = min(self.item_idx, len(self._cur_tab_items()) - 1)
+            else:
+                self._refresh_acl()
+            return True
+
+        # ACL tab: delegate to ACL-specific handler
+        if self.tab_idx >= len(TABS):
+            return self._handle_acl_keys(ch)
+
         items = self._cur_tab_items()
         item = self._cur_item()
-
-        if ch == ord('\t') or ch == 9:  # Tab always switches tabs
-            self.tab_idx = (self.tab_idx + 1) % len(TABS)
-            self.item_idx = min(self.item_idx, len(self._cur_tab_items()) - 1)
-            return True
-
-        if ch == curses.KEY_BTAB:  # Shift-Tab
-            self.tab_idx = (self.tab_idx - 1) % len(TABS)
-            self.item_idx = min(self.item_idx, len(self._cur_tab_items()) - 1)
-            return True
 
         if ch == curses.KEY_UP:
             self.item_idx = max(0, self.item_idx - 1)
@@ -324,9 +359,11 @@ class SettingsTUI:
             elif typ == 'toggle':
                 self.cfg[key] = not self.cfg[key]
             else:
-                # text field: left/right switches tabs
-                self.tab_idx = (self.tab_idx - 1) % len(TABS)
-                self.item_idx = min(self.item_idx, len(self._cur_tab_items()) - 1)
+                self.tab_idx = (self.tab_idx - 1) % total_tabs
+                if self.tab_idx < len(TABS):
+                    self.item_idx = min(self.item_idx, len(self._cur_tab_items()) - 1)
+                else:
+                    self._refresh_acl()
             return True
 
         if ch == curses.KEY_RIGHT:
@@ -335,8 +372,11 @@ class SettingsTUI:
             elif typ == 'toggle':
                 self.cfg[key] = not self.cfg[key]
             else:
-                self.tab_idx = (self.tab_idx + 1) % len(TABS)
-                self.item_idx = min(self.item_idx, len(self._cur_tab_items()) - 1)
+                self.tab_idx = (self.tab_idx + 1) % total_tabs
+                if self.tab_idx < len(TABS):
+                    self.item_idx = min(self.item_idx, len(self._cur_tab_items()) - 1)
+                else:
+                    self._refresh_acl()
             return True
 
         if ch == ord(' '):
@@ -351,13 +391,15 @@ class SettingsTUI:
                 self.editing_text = True
                 self.edit_buffer = str(self.cfg[key])
                 self.edit_cursor = len(self.edit_buffer)
-                import curses
                 curses.curs_set(1)
             elif typ == 'choice':
                 self._cycle_choice(key, options, 1)
             elif typ == 'toggle':
                 self.cfg[key] = not self.cfg[key]
             return True
+
+        if ch in (ord('q'), 27):
+            return False
 
         return True
 
@@ -499,8 +541,8 @@ class SettingsTUI:
         # Tabs row
         row = content_start
         col = 3
-        for ti, (tname, _) in enumerate(TABS):
-            label = f" {tname} "
+        all_tab_names = [t[0] for t in TABS] + ["ACL"]
+        for ti, tname in enumerate(all_tab_names):
             if ti == self.tab_idx:
                 attr = self._attr(1, curses.A_BOLD)
                 stdscr.addstr(row, col, f"[ {tname} ]", attr)
@@ -513,9 +555,11 @@ class SettingsTUI:
         sep = "-" * (w - 4)
         stdscr.addstr(row, 2, sep[:w-4], border_attr)
 
-        # Items
-        items = self._cur_tab_items()
+        # Content
         start_row = content_start + 3
+        if self.tab_idx >= len(TABS):
+            self._draw_acl_content(start_row, h, w, border_attr)
+        items = self._cur_tab_items()
         for ii, (key, label, typ, options, default) in enumerate(items):
             r = start_row + ii * 2
             if r >= h - 3:
@@ -573,9 +617,9 @@ class SettingsTUI:
                 else:
                     stdscr.addstr(r, val_col, str(cur_val)[:w-val_col-4], self._attr(3, curses.A_BOLD if selected else 0))
 
-        # Model-change warning
+        # Model-change warning (not shown on ACL tab)
         self._check_warnings()
-        if self.warning_msg:
+        if self.warning_msg and self.tab_idx < len(TABS):
             warn_lines = self.warning_msg.split('\n')
             warn_start = h - 2 - len(warn_lines) - 1
             for wi, wl in enumerate(warn_lines):
@@ -586,10 +630,16 @@ class SettingsTUI:
 
         # Help line
         help_row = h - 2
-        if self.editing_text:
+        if self.acl_editing:
+            help_text = "  Up/Dn navigate  |  Space=toggle privilege  |  s=save  |  Esc/q=cancel"
+        elif self.acl_naming:
+            help_text = "  Enter=confirm  |  Esc=cancel"
+        elif self.tab_idx >= len(TABS):
+            help_text = "  t=toggle  n=new  d=revoke  r=rotate  e=edit privs  c=show key  |  Tab switch  |  q save+exit"
+        elif self.editing_text:
             help_text = "  Type to edit  |  Enter confirm  |  Esc cancel"
         else:
-            help_text = "  Up/Dn navigate  |  Left/Right/Space cycle  |  Enter edit text  |  Tab switch tab  |  q save+exit"
+            help_text = "  Up/Dn navigate  |  Left/Right/Space cycle  |  Enter edit text  |  Tab switch  |  q save+exit"
         try:
             stdscr.addstr(help_row, 2, "-" * (w - 4), border_attr)
             stdscr.addstr(help_row + 0, 2, help_text[:w-4], self._attr(6))
@@ -597,6 +647,190 @@ class SettingsTUI:
             pass
 
         stdscr.refresh()
+
+    def _refresh_acl(self):
+        self.acl_clients = rag_acl.list_clients()
+        self.acl_sel = min(self.acl_sel, max(0, len(self.acl_clients) - 1))
+        self.acl_status = ""
+
+    def _handle_acl_keys(self, ch):
+        """Handle keys when ACL tab is active. Returns True if handled."""
+        import curses
+        if ch == curses.KEY_UP:
+            self.acl_sel = max(0, self.acl_sel - 1)
+            return True
+        if ch == curses.KEY_DOWN:
+            self.acl_sel = min(max(0, len(self.acl_clients) - 1), self.acl_sel + 1)
+            return True
+        if ch == ord('t'):
+            rag_acl.set_enabled(not rag_acl.is_enabled())
+            self.acl_status = "ACL " + ("enabled" if rag_acl.is_enabled() else "disabled")
+            return True
+        if ch == ord('n'):
+            self.acl_naming = True
+            self.acl_name_buf = ""
+            self.acl_name_cur = 0
+            curses.curs_set(1)
+            return True
+        if ch == ord('d') and self.acl_clients:
+            key, client = self.acl_clients[self.acl_sel]
+            rag_acl.revoke_client(key)
+            self._refresh_acl()
+            self.acl_status = f"Revoked: {client['name']}"
+            return True
+        if ch == ord('r') and self.acl_clients:
+            key, client = self.acl_clients[self.acl_sel]
+            new_key = rag_acl.rotate_key(key)
+            self._refresh_acl()
+            self.acl_status = f"New key: {new_key}"
+            return True
+        if ch == ord('c') and self.acl_clients:
+            key, _ = self.acl_clients[self.acl_sel]
+            self.acl_status = f"Key: {key}"
+            return True
+        if ch == ord('e') and self.acl_clients:
+            key, client = self.acl_clients[self.acl_sel]
+            self.acl_edit_key = key
+            self.acl_edit_privs = {p: p in client.get('privileges', []) for p in rag_acl.ALL_PRIVILEGES}
+            self.acl_edit_idx = 0
+            self.acl_editing = True
+            return True
+        if ch in (ord('q'), 27):
+            return False
+        return True
+
+    def _handle_acl_naming(self, ch):
+        import curses
+        if ch in (curses.KEY_ENTER, 10, 13):
+            name = self.acl_name_buf.strip()
+            if name:
+                key = rag_acl.create_client(name)
+                self._refresh_acl()
+                self.acl_status = f"Created: {key}"
+            self.acl_naming = False
+            curses.curs_set(0)
+        elif ch == 27:
+            self.acl_naming = False
+            curses.curs_set(0)
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            if self.acl_name_cur > 0:
+                self.acl_name_buf = self.acl_name_buf[:self.acl_name_cur-1] + self.acl_name_buf[self.acl_name_cur:]
+                self.acl_name_cur -= 1
+        elif ch == curses.KEY_LEFT:
+            self.acl_name_cur = max(0, self.acl_name_cur - 1)
+        elif ch == curses.KEY_RIGHT:
+            self.acl_name_cur = min(len(self.acl_name_buf), self.acl_name_cur + 1)
+        elif 32 <= ch < 127:
+            self.acl_name_buf = self.acl_name_buf[:self.acl_name_cur] + chr(ch) + self.acl_name_buf[self.acl_name_cur:]
+            self.acl_name_cur += 1
+
+    def _handle_acl_editing(self, ch):
+        """Handle keys when editing privileges for a client."""
+        import curses
+        privs = list(rag_acl.ALL_PRIVILEGES)
+        if ch == curses.KEY_UP:
+            self.acl_edit_idx = max(0, self.acl_edit_idx - 1)
+        elif ch == curses.KEY_DOWN:
+            self.acl_edit_idx = min(len(privs) - 1, self.acl_edit_idx + 1)
+        elif ch in (ord(' '), curses.KEY_ENTER, 10, 13):
+            p = privs[self.acl_edit_idx]
+            self.acl_edit_privs[p] = not self.acl_edit_privs[p]
+        elif ch == ord('s'):
+            # Save
+            new_privs = [p for p in privs if self.acl_edit_privs.get(p)]
+            rag_acl.update_client(self.acl_edit_key, privileges=new_privs)
+            self.acl_editing = False
+            self._refresh_acl()
+            self.acl_status = "Privileges updated"
+        elif ch in (ord('q'), 27):
+            # Cancel
+            self.acl_editing = False
+
+    def _draw_acl_content(self, start_row, h, w, border_attr):
+        """Draw ACL tab content area (called from _draw)."""
+        import curses
+        stdscr = self.stdscr
+
+        if self.acl_editing:
+            self._draw_acl_edit(start_row, h, w, border_attr)
+            return
+
+        enabled = rag_acl.is_enabled()
+        status_text = "ENABLED" if enabled else "DISABLED"
+        status_attr = self._attr(4, curses.A_BOLD) if enabled else self._attr(5, curses.A_BOLD)
+        stdscr.addstr(start_row, 5, "Status: ", self._attr(6))
+        stdscr.addstr(start_row, 13, status_text, status_attr)
+
+        row = start_row + 2
+        for ci, (key, client) in enumerate(self.acl_clients):
+            if row >= h - 5:
+                break
+            sel = (ci == self.acl_sel)
+            ptr = ">" if sel else " "
+            ptr_attr = self._attr(6, curses.A_BOLD) if sel else 0
+
+            masked = rag_acl.mask_key(key)
+            name = client.get('name', '?')
+            line1 = f'{masked}  "{name}"'
+
+            indexes = client.get('indexes', '*')
+            idx_str = "*" if indexes == "*" else ", ".join(indexes) if indexes else "(none)"
+            privs = ", ".join(client.get('privileges', []))
+            line2 = f"  idx: {idx_str} | privs: {privs}"
+
+            lbl_attr = self._attr(2) if sel else curses.A_NORMAL
+            stdscr.addstr(row, 3, ptr, ptr_attr)
+            stdscr.addstr(row, 5, line1[:w-7], lbl_attr)
+            row += 1
+            stdscr.addstr(row, 5, line2[:w-7], self._attr(3))
+            row += 2
+
+        if not self.acl_clients:
+            stdscr.addstr(start_row + 2, 5, "(no clients configured)", self._attr(7))
+
+        if self.acl_status:
+            try:
+                stdscr.addstr(h - 4, 3, self.acl_status[:w-6], self._attr(6))
+            except curses.error:
+                pass
+
+        if self.acl_naming:
+            prompt = "Client name: "
+            buf_display = self.acl_name_buf + " "
+            try:
+                stdscr.addstr(h - 4, 3, " " * (w - 6), curses.A_NORMAL)
+                stdscr.addstr(h - 4, 3, prompt + buf_display[:w-len(prompt)-6],
+                              self._attr(3, curses.A_UNDERLINE))
+                stdscr.move(h - 4, 3 + len(prompt) + self.acl_name_cur)
+            except curses.error:
+                pass
+
+    def _draw_acl_edit(self, start_row, h, w, border_attr):
+        """Draw privilege editor for a single client."""
+        import curses
+        stdscr = self.stdscr
+        client = rag_acl.load()['clients'].get(self.acl_edit_key, {})
+        name = client.get('name', '?')
+
+        stdscr.addstr(start_row, 5, f'Editing privileges: "{name}"', self._attr(6, curses.A_BOLD))
+
+        privs = list(rag_acl.ALL_PRIVILEGES)
+        for pi, priv in enumerate(privs):
+            row = start_row + 2 + pi
+            if row >= h - 4:
+                break
+            sel = (pi == self.acl_edit_idx)
+            on = self.acl_edit_privs.get(priv, False)
+
+            ptr = ">" if sel else " "
+            ptr_attr = self._attr(6, curses.A_BOLD) if sel else 0
+            stdscr.addstr(row, 5, ptr, ptr_attr)
+
+            box = "[X]" if on else "[ ]"
+            box_attr = self._attr(4, curses.A_BOLD) if on else self._attr(5)
+            lbl_attr = self._attr(2) if sel else curses.A_NORMAL
+            stdscr.addstr(row, 7, box, box_attr)
+            stdscr.addstr(row, 11, priv, lbl_attr)
 
 
 # ── Tkinter GUI Dialog ──────────────────────────────────────────────────────
@@ -695,6 +929,7 @@ class SettingsDialog:
         btn_frame.pack(fill='x', padx=10, pady=(5, 10))
 
         ttk.Button(btn_frame, text="Defaults", command=self._reset_defaults).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Access Control", command=self._open_acl_dialog).pack(side='left', padx=5)
         ttk.Button(btn_frame, text="Cancel", command=self.win.destroy).pack(side='right', padx=5)
         ttk.Button(btn_frame, text="Save", command=self._save).pack(side='right', padx=5)
 
@@ -771,6 +1006,262 @@ class SettingsDialog:
                 var.set(default)
             elif typ == 'text':
                 var.set(str(default))
+
+    def _open_acl_dialog(self):
+        """Open the Access Control dialog."""
+        ACLDialog(self.win)
+
+
+# ── Access Control Dialogs ─────────────────────────────────────────────────
+
+class ACLDialog:
+    """Modal tkinter dialog for managing RAG access control."""
+
+    BG       = '#0f1626'
+    BG2      = '#1a2332'
+    BG3      = '#243044'
+    FG       = '#d4d4dc'
+    FG_DIM   = '#7a8599'
+    ACCENT   = '#e8781e'
+    ICE      = '#5eb8d4'
+    WARN_RED = '#e74c3c'
+    GREEN    = '#2ecc71'
+
+    def __init__(self, parent):
+        import tkinter as tk
+        from tkinter import ttk
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("RAG Access Control")
+        self.win.geometry("620x420")
+        self.win.resizable(False, False)
+        self.win.transient(parent)
+        self.win.grab_set()
+        self.win.configure(bg=self.BG)
+
+        # Enable/disable toggle
+        top_frame = tk.Frame(self.win, bg=self.BG)
+        top_frame.pack(fill='x', padx=15, pady=(15, 5))
+
+        self.enabled_var = tk.BooleanVar(value=rag_acl.is_enabled())
+        tk.Label(top_frame, text="Access Control:", bg=self.BG, fg=self.FG,
+                 font=('sans-serif', 11, 'bold')).pack(side='left')
+        self.toggle_btn = tk.Button(top_frame,
+                                     text="ENABLED" if self.enabled_var.get() else "DISABLED",
+                                     bg=self.GREEN if self.enabled_var.get() else self.WARN_RED,
+                                     fg='white', font=('sans-serif', 9, 'bold'), relief='flat',
+                                     padx=10, command=self._toggle_enabled)
+        self.toggle_btn.pack(side='left', padx=10)
+
+        # Treeview for clients
+        tree_frame = tk.Frame(self.win, bg=self.BG)
+        tree_frame.pack(fill='both', expand=True, padx=15, pady=5)
+
+        style = ttk.Style(self.win)
+        style.configure('ACL.Treeview', background=self.BG2, foreground=self.FG,
+                         fieldbackground=self.BG2, rowheight=28)
+        style.configure('ACL.Treeview.Heading', background=self.BG3, foreground=self.ACCENT,
+                         font=('sans-serif', 9, 'bold'))
+
+        columns = ('name', 'key', 'indexes', 'privileges')
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings',
+                                  style='ACL.Treeview', selectmode='browse')
+        self.tree.heading('name', text='Name')
+        self.tree.heading('key', text='Key')
+        self.tree.heading('indexes', text='Indexes')
+        self.tree.heading('privileges', text='Privileges')
+        self.tree.column('name', width=100)
+        self.tree.column('key', width=120)
+        self.tree.column('indexes', width=120)
+        self.tree.column('privileges', width=240)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+        # Buttons
+        btn_frame = tk.Frame(self.win, bg=self.BG)
+        btn_frame.pack(fill='x', padx=15, pady=(5, 5))
+
+        for text, cmd in [("New Key", self._create_key), ("Edit", self._edit_key),
+                          ("Rotate", self._rotate_key), ("Copy Key", self._copy_key),
+                          ("Revoke", self._revoke_key)]:
+            tk.Button(btn_frame, text=text, command=cmd, bg=self.BG3, fg=self.FG,
+                       relief='flat', padx=8, pady=3).pack(side='left', padx=3)
+
+        tk.Button(btn_frame, text="Close", command=self.win.destroy, bg=self.BG3, fg=self.FG,
+                   relief='flat', padx=8, pady=3).pack(side='right', padx=3)
+
+        # Status bar
+        self.status_var = tk.StringVar(value="")
+        tk.Label(self.win, textvariable=self.status_var, bg=self.BG, fg=self.ICE,
+                 font=('monospace', 8), anchor='w').pack(fill='x', padx=15, pady=(0, 10))
+
+        self._refresh()
+
+        # Center on parent
+        self.win.update_idletasks()
+        px = parent.winfo_rootx() + (parent.winfo_width() - self.win.winfo_width()) // 2
+        py = parent.winfo_rooty() + (parent.winfo_height() - self.win.winfo_height()) // 2
+        self.win.geometry(f"+{max(0,px)}+{max(0,py)}")
+
+        self.win.wait_window()
+
+    def _refresh(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.acl_clients = rag_acl.list_clients()
+        for key, client in self.acl_clients:
+            masked = rag_acl.mask_key(key)
+            indexes = client.get('indexes', '*')
+            idx_str = "*" if indexes == "*" else ", ".join(indexes) if indexes else "(none)"
+            privs = ", ".join(client.get('privileges', []))
+            self.tree.insert('', 'end', iid=key,
+                              values=(client.get('name', '?'), masked, idx_str, privs))
+
+    def _toggle_enabled(self):
+        new_state = not rag_acl.is_enabled()
+        rag_acl.set_enabled(new_state)
+        self.enabled_var.set(new_state)
+        self.toggle_btn.config(text="ENABLED" if new_state else "DISABLED",
+                                bg=self.GREEN if new_state else self.WARN_RED)
+        self.status_var.set("ACL " + ("enabled" if new_state else "disabled"))
+
+    def _get_selected_key(self):
+        sel = self.tree.selection()
+        if not sel:
+            self.status_var.set("No client selected")
+            return None
+        return sel[0]
+
+    def _create_key(self):
+        from tkinter import simpledialog, messagebox
+        name = simpledialog.askstring("New API Key", "Client name:", parent=self.win)
+        if not name:
+            return
+        key = rag_acl.create_client(name.strip())
+        self._refresh()
+        messagebox.showinfo("Key Created",
+                             f"Name: {name.strip()}\nKey: {key}\n\n"
+                             "Add to MCP client config:\n"
+                             f'  "env": {{"RAG_API_KEY": "{key}"}}',
+                             parent=self.win)
+        self.status_var.set(f"Created key for {name.strip()}")
+
+    def _edit_key(self):
+        key = self._get_selected_key()
+        if not key:
+            return
+        client = dict(rag_acl.load()['clients'].get(key, {}))
+        if not client:
+            return
+        ACLEditDialog(self.win, key, client)
+        self._refresh()
+
+    def _rotate_key(self):
+        from tkinter import messagebox
+        key = self._get_selected_key()
+        if not key:
+            return
+        client = rag_acl.load()['clients'].get(key, {})
+        if not messagebox.askyesno("Rotate Key",
+                                    f"Rotate key for '{client.get('name', '?')}'?\n"
+                                    "The old key will stop working immediately.",
+                                    parent=self.win):
+            return
+        new_key = rag_acl.rotate_key(key)
+        self._refresh()
+        messagebox.showinfo("Key Rotated", f"New key: {new_key}", parent=self.win)
+        self.status_var.set(f"Key rotated: {new_key}")
+
+    def _copy_key(self):
+        key = self._get_selected_key()
+        if not key:
+            return
+        self.win.clipboard_clear()
+        self.win.clipboard_append(key)
+        self.status_var.set(f"Copied: {key}")
+
+    def _revoke_key(self):
+        from tkinter import messagebox
+        key = self._get_selected_key()
+        if not key:
+            return
+        client = rag_acl.load()['clients'].get(key, {})
+        if not messagebox.askyesno("Revoke Key",
+                                    f"Revoke key for '{client.get('name', '?')}'?\n"
+                                    "This cannot be undone.",
+                                    parent=self.win):
+            return
+        rag_acl.revoke_client(key)
+        self._refresh()
+        self.status_var.set("Key revoked")
+
+
+class ACLEditDialog:
+    """Sub-dialog for editing a client's name, indexes, and privileges."""
+
+    BG  = '#0f1626'
+    BG2 = '#1a2332'
+    BG3 = '#243044'
+    FG  = '#d4d4dc'
+
+    def __init__(self, parent, key, client):
+        import tkinter as tk
+
+        self.key = key
+        self.win = tk.Toplevel(parent)
+        self.win.title(f"Edit: {client.get('name', '?')}")
+        self.win.geometry("400x350")
+        self.win.resizable(False, False)
+        self.win.transient(parent)
+        self.win.grab_set()
+        self.win.configure(bg=self.BG)
+
+        pad = {'padx': 15, 'pady': 5}
+
+        tk.Label(self.win, text="Name:", bg=self.BG, fg=self.FG).pack(anchor='w', **pad)
+        self.name_var = tk.StringVar(value=client.get('name', ''))
+        tk.Entry(self.win, textvariable=self.name_var, width=40).pack(anchor='w', padx=15)
+
+        tk.Label(self.win, text="Indexes (* for all, or comma-separated):",
+                 bg=self.BG, fg=self.FG).pack(anchor='w', **pad)
+        indexes = client.get('indexes', '*')
+        idx_str = "*" if indexes == "*" else ", ".join(indexes)
+        self.idx_var = tk.StringVar(value=idx_str)
+        tk.Entry(self.win, textvariable=self.idx_var, width=40).pack(anchor='w', padx=15)
+
+        tk.Label(self.win, text="Privileges:", bg=self.BG, fg=self.FG).pack(anchor='w', **pad)
+        self.priv_vars = {}
+        priv_frame = tk.Frame(self.win, bg=self.BG)
+        priv_frame.pack(anchor='w', padx=15)
+        current_privs = set(client.get('privileges', []))
+        for priv in rag_acl.ALL_PRIVILEGES:
+            var = tk.BooleanVar(value=priv in current_privs)
+            tk.Checkbutton(priv_frame, text=priv, variable=var, bg=self.BG, fg=self.FG,
+                            selectcolor=self.BG2, activebackground=self.BG).pack(anchor='w')
+            self.priv_vars[priv] = var
+
+        btn_frame = tk.Frame(self.win, bg=self.BG)
+        btn_frame.pack(fill='x', padx=15, pady=15)
+        tk.Button(btn_frame, text="Cancel", command=self.win.destroy, bg=self.BG3, fg=self.FG,
+                   relief='flat', padx=10).pack(side='right', padx=3)
+        tk.Button(btn_frame, text="Save", command=self._save, bg=self.BG3, fg=self.FG,
+                   relief='flat', padx=10).pack(side='right', padx=3)
+
+        self.win.wait_window()
+
+    def _save(self):
+        name = self.name_var.get().strip() or None
+        idx_str = self.idx_var.get().strip()
+        if idx_str == "*":
+            indexes = "*"
+        else:
+            indexes = [i.strip() for i in idx_str.split(",") if i.strip()]
+        privileges = [p for p, v in self.priv_vars.items() if v.get()]
+        rag_acl.update_client(self.key, name=name, indexes=indexes, privileges=privileges)
+        self.win.destroy()
 
 
 # ── CLI entry point ─────────────────────────────────────────────────────────
