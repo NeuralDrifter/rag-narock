@@ -22,6 +22,8 @@ Everything runs on-device. Nothing leaves the machine.
 - **MCP server** — plug directly into Claude Code or any MCP-compatible assistant
 - **Multiple backends** — FAISS (fast), SQLite-vec (compact), SQLite-doc (document-aware with context expansion)
 - **OCR built-in** — automatically OCRs scanned PDFs and images via Tesseract
+- **Audio transcription** — indexes local audio/video files via Whisper-compatible backends
+- **Subtitle-aware video ingestion** — prefers sidecar and embedded captions, with GUI source selection and preview
 - **Integrity verification** — SHA-256 hashing detects tampering or corruption
 - **Code indexing** — language-aware chunking for codebases
 - **TUI editor** — curses-based interface for managing indexes, sources, and locks
@@ -29,10 +31,10 @@ Everything runs on-device. Nothing leaves the machine.
 
 ## Supported Formats
 
-| Documents | Images (OCR) | Code |
-|-----------|-------------|------|
-| PDF, EPUB, MOBI, DJVU | PNG, JPG, TIFF, BMP, WebP | All text-based languages |
-| TXT, Markdown, RST | PBM, PGM, PPM | Build files auto-detected |
+| Documents | Audio / Video | Subtitles | Images (OCR) | Code |
+|-----------|---------------|-----------|-------------|------|
+| PDF, EPUB, MOBI, DJVU | MP3, WAV, M4A, FLAC, OGG, OPUS, AAC, MP4, M4V, MOV, WebM, MKV, AVI | SRT, VTT, ASS, SSA | PNG, JPG, TIFF, BMP, WebP | All text-based languages |
+| TXT, Markdown, RST |  |  | PBM, PGM, PPM | Build files auto-detected |
 
 ## Installation
 
@@ -40,6 +42,9 @@ Everything runs on-device. Nothing leaves the machine.
 git clone https://github.com/NeuralDrifter/rag-narock.git
 cd rag-narock
 pip install sentence-transformers faiss-cpu sqlite-vec mcp
+```
+
+Note: Refactored to modular structure (core, config, ingestion, gui, cli, etc) per clean code.
 ```
 
 Optional for OCR:
@@ -51,6 +56,22 @@ pip install pytesseract pdf2image Pillow
 Optional for EPUB/MOBI:
 ```bash
 pip install ebooklib mobi
+```
+
+Optional for audio transcription:
+```bash
+sudo apt install ffmpeg
+pip install openai-whisper
+```
+
+Alternative audio backend:
+```bash
+pip install faster-whisper
+```
+
+Optional external subtitle provider:
+```bash
+# configure your SubDL API key in rag.py settings -> Audio
 ```
 
 ## Quick Start
@@ -160,6 +181,8 @@ Run `python rag.py settings` to configure:
 - **Storage backend** — FAISS, SQLite-vec, or SQLite-doc
 - **Chunk size / overlap** — tune for your content type
 - **OCR settings** — language, DPI, invert colors, split spreads
+- **Transcription settings** — backend, model, language, device
+- **Subtitle settings** — preferred language, local caption preference, external provider toggle
 - **Data directory** — where indexes are stored
 
 ## License

@@ -38,3 +38,5 @@ rag_data/
 chunks.json
 hashes.json
 integrity.json
+models/
+mcps/

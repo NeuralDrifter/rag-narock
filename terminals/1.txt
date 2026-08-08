@@ -1,0 +1,7 @@
+---
+pid: 55244
+cwd: "C:\Users\Mike\Documents\MCP_Servers\rag-narock"
+command: "$env:PATH = \"C:\\Users\\Mike\\AppData\\Local\\agy\\bin;\" + $env:PATH; agy -p \"hello\" 2>&1"
+started_at: 2026-06-18T19:55:39.279Z
+running_for_ms: 90009    
+---

@@ -1,0 +1,656 @@
+
+> @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1 build
+> node scripts/build.js
+
+
+> @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1 generate
+> node scripts/generate-git-commit-info.js
+
+Building @google/gemini-cli-core...
+
+> @google/gemini-cli-core@0.49.0-nightly.20260617.g4d3dcdce1 build
+> node ../../scripts/build_package.js
+
+Running chrome devtools MCP bundling...
+
+> @google/gemini-cli-core@0.49.0-nightly.20260617.g4d3dcdce1 bundle:browser-mcp
+> node scripts/bundle-browser-mcp.mjs
+
+Successfully copied files.
+Copied documentation to dist/docs
+Building other workspaces in parallel...
+
+> @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1 build
+> node ../../scripts/build_package.js
+
+npm warn Unknown cli config "sandboxImageUri" (@google/gemini-cli:sandboxImageUri). This will stop working in the next major version of npm.
+
+> @google/gemini-cli-a2a-server@0.49.0-nightly.20260617.g4d3dcdce1 build
+> node ../../scripts/build_package.js
+
+
+> @google/gemini-cli-sdk@0.49.0-nightly.20260617.g4d3dcdce1 build
+> node ../../scripts/build_package.js
+
+
+> @google/gemini-cli-devtools@0.49.0-nightly.20260617.g4d3dcdce1 build
+> npm run build:client && tsc -p tsconfig.build.json
+
+
+> gemini-cli-vscode-ide-companion@0.49.0-nightly.20260617.g4d3dcdce1 build
+> npm run build:dev
+
+
+> @google/gemini-cli-test-utils@0.49.0-nightly.20260617.g4d3dcdce1 build
+> node ../../scripts/build_package.js
+
+npm warn Unknown cli config "sandboxImageUri" (@google/gemini-cli:sandboxImageUri). This will stop working in the next major version of npm.
+npm warn Unknown cli config "sandboxImageUri" (@google/gemini-cli:sandboxImageUri). This will stop working in the next major version of npm.
+npm warn Unknown cli config "sandboxImageUri" (@google/gemini-cli:sandboxImageUri). This will stop working in the next major version of npm.
+npm warn Unknown cli config "sandboxImageUri" (@google/gemini-cli:sandboxImageUri). This will stop working in the next major version of npm.
+npm warn Unknown cli config "sandboxImageUri" (@google/gemini-cli:sandboxImageUri). This will stop working in the next major version of npm.
+Successfully copied files.
+Successfully copied files.
+Successfully copied files.
+
+> @google/gemini-cli-devtools@0.49.0-nightly.20260617.g4d3dcdce1 build:client
+> node esbuild.client.js
+
+
+> gemini-cli-vscode-ide-companion@0.49.0-nightly.20260617.g4d3dcdce1 build:dev
+> node esbuild.js
+
+Successfully copied files.
+[watch] build started
+[watch] build finished
+
+> @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1 bundle
+> npm run generate && npm run build --workspace=@google/gemini-cli-devtools && npm run bundle:browser-mcp -w @google/gemini-cli-core && node esbuild.config.js && node scripts/copy_bundle_assets.js
+
+
+> @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1 generate
+> node scripts/generate-git-commit-info.js
+
+
+> @google/gemini-cli-devtools@0.49.0-nightly.20260617.g4d3dcdce1 build
+> npm run build:client && tsc -p tsconfig.build.json
+
+
+> @google/gemini-cli-devtools@0.49.0-nightly.20260617.g4d3dcdce1 build:client
+> node esbuild.client.js
+
+
+> @google/gemini-cli-core@0.49.0-nightly.20260617.g4d3dcdce1 bundle:browser-mcp
+> node scripts/bundle-browser-mcp.mjs
+
+Copied 9 policy files to bundle/policies/
+Copied 9 policy files to packages/a2a-server/dist/policies/
+Copied docs to bundle/docs/
+Copied built-in skills to bundle/builtin/
+Copied bundled chrome-devtools-mcp to bundle/bundled/
+Copied extension examples to bundle/examples/
+Assets copied to bundle/
+
+> @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1 prepare
+> husky && npm run bundle
+
+
+> @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1 bundle
+> npm run generate && npm run build --workspace=@google/gemini-cli-devtools && npm run bundle:browser-mcp -w @google/gemini-cli-core && node esbuild.config.js && node scripts/copy_bundle_assets.js
+
+
+> @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1 generate
+> node scripts/generate-git-commit-info.js
+
+
+> @google/gemini-cli-devtools@0.49.0-nightly.20260617.g4d3dcdce1 build
+> npm run build:client && tsc -p tsconfig.build.json
+
+
+> @google/gemini-cli-devtools@0.49.0-nightly.20260617.g4d3dcdce1 build:client
+> node esbuild.client.js
+
+
+> @google/gemini-cli-core@0.49.0-nightly.20260617.g4d3dcdce1 bundle:browser-mcp
+> node scripts/bundle-browser-mcp.mjs
+
+Copied 9 policy files to bundle/policies/
+Copied 9 policy files to packages/a2a-server/dist/policies/
+Copied docs to bundle/docs/
+Copied built-in skills to bundle/builtin/
+Copied bundled chrome-devtools-mcp to bundle/bundled/
+Copied extension examples to bundle/examples/
+Assets copied to bundle/
+npm warn gitignore-fallback No .npmignore file found, using .gitignore for file exclusion. Consider creating a .npmignore file to explicitly control published files.
+npm warn gitignore-fallback No .npmignore file found, using .gitignore for file exclusion. Consider creating a .npmignore file to explicitly control published files.
+npm warn gitignore-fallback No .npmignore file found, using .gitignore for file exclusion. Consider creating a .npmignore file to explicitly control published files.
+npm warn gitignore-fallback No .npmignore file found, using .gitignore for file exclusion. Consider creating a .npmignore file to explicitly control published files.
+google-gemini-cli-0.49.0-nightly.20260617.g4d3dcdce1.tgz
+npm notice
+Installing C:\Users\Mike\Desktop\Code\cli src\opens source\gemini-cli\google-gemini-cli-0.49.0-nightly.20260617.g4d3dcdce1.tgznpm notice package: @google/gemini-cli@0.49.0-nightly.20260617.g4d3dcdce1
+npm notice Tarball Contents
+npm notice 11.4kB LICENSE
+npm notice 13.5kB README.md
+npm notice 3.3kB bundle/builtin/antigravity-support/SKILL.md
+npm notice 8.0kB bundle/builtin/skill-creator/scripts/init_skill.cjs
+npm notice 3.9kB bundle/builtin/skill-creator/scripts/package_skill.cjs
+npm notice 3.5kB bundle/builtin/skill-creator/scripts/validate_skill.cjs
+npm notice 20.1kB bundle/builtin/skill-creator/SKILL.md
+npm notice 11.6MB bundle/bundled/chrome-devtools-mcp.mjs
+npm notice 209B bundle/bundled/third_party/bundled-packages.json
+npm notice 8.0MB bundle/bundled/third_party/index.js
+npm notice 304B bundle/bundled/third_party/issue-descriptions/arInsecureContext.md
+npm notice 228B bundle/bundled/third_party/issue-descriptions/arInvalidInfoHeader.md
+npm notice 249B bundle/bundled/third_party/issue-descriptions/arInvalidRegisterOsSourceHeader.md
+npm notice 252B bundle/bundled/third_party/issue-descriptions/arInvalidRegisterOsTriggerHeader.md
+npm notice 239B bundle/bundled/third_party/issue-descriptions/arInvalidRegisterSourceHeader.md
+npm notice 242B bundle/bundled/third_party/issue-descriptions/arInvalidRegisterTriggerHeader.md
+npm notice 325B bundle/bundled/third_party/issue-descriptions/arNavigationRegistrationUniqueScopeAlreadySet.md
+npm notice 383B bundle/bundled/third_party/issue-descriptions/arNavigationRegistrationWithoutTransientUserActivation.md
+npm notice 298B bundle/bundled/third_party/issue-descriptions/arNoRegisterOsSourceHeader.md
+npm notice 301B bundle/bundled/third_party/issue-descriptions/arNoRegisterOsTriggerHeader.md
+npm notice 296B bundle/bundled/third_party/issue-descriptions/arNoRegisterSourceHeader.md
+npm notice 299B bundle/bundled/third_party/issue-descriptions/arNoRegisterTriggerHeader.md
+npm notice 204B bundle/bundled/third_party/issue-descriptions/arNoWebOrOsSupport.md
+npm notice 801B bundle/bundled/third_party/issue-descriptions/arOsSourceIgnored.md
+npm notice 826B bundle/bundled/third_party/issue-descriptions/arOsTriggerIgnored.md
+npm notice 472B bundle/bundled/third_party/issue-descriptions/arPermissionPolicyDisabled.md
+npm notice 451B bundle/bundled/third_party/issue-descriptions/arSourceAndTriggerHeaders.md
+npm notice 698B bundle/bundled/third_party/issue-descriptions/arSourceIgnored.md
+npm notice 651B bundle/bundled/third_party/issue-descriptions/arTriggerIgnored.md
+npm notice 448B bundle/bundled/third_party/issue-descriptions/arUntrustworthyReportingOrigin.md
+npm notice 429B bundle/bundled/third_party/issue-descriptions/arWebAndOsHeaders.md
+npm notice 269B bundle/bundled/third_party/issue-descriptions/bounceTrackingMitigations.md
+npm notice 175B bundle/bundled/third_party/issue-descriptions/clientHintMetaTagAllowListInvalidOrigin.md
+npm notice 189B bundle/bundled/third_party/issue-descriptions/clientHintMetaTagModifiedHTML.md
+npm notice 306B bundle/bundled/third_party/issue-descriptions/CoepCoopSandboxedIframeCannotNavigateToCoopPage.md
+npm notice 677B bundle/bundled/third_party/issue-descriptions/CoepCorpNotSameOrigin.md
+npm notice 969B bundle/bundled/third_party/issue-descriptions/CoepCorpNotSameOriginAfterDefaultedToSameOriginByCoep.md
+npm notice 499B bundle/bundled/third_party/issue-descriptions/CoepCorpNotSameSite.md
+npm notice 488B bundle/bundled/third_party/issue-descriptions/CoepFrameResourceNeedsCoepHeader.md
+npm notice 424B bundle/bundled/third_party/issue-descriptions/CompatibilityModeQuirks.md
+npm notice 467B bundle/bundled/third_party/issue-descriptions/connectionAllowlistInvalidAllowlistItemType.md
+npm notice 437B bundle/bundled/third_party/issue-descriptions/connectionAllowlistInvalidHeader.md
+npm notice 333B bundle/bundled/third_party/issue-descriptions/connectionAllowlistInvalidUrlPattern.md
+npm notice 425B bundle/bundled/third_party/issue-descriptions/connectionAllowlistItemNotInnerList.md
+npm notice 361B bundle/bundled/third_party/issue-descriptions/connectionAllowlistMoreThanOneList.md
+npm notice 265B bundle/bundled/third_party/issue-descriptions/connectionAllowlistReportingEndpointNotToken.md
+npm notice 404B bundle/bundled/third_party/issue-descriptions/CookieAttributeValueExceedsMaxSize.md
+npm notice 515B bundle/bundled/third_party/issue-descriptions/cookieCrossSiteRedirectDowngrade.md
+npm notice 182B bundle/bundled/third_party/issue-descriptions/cookieExcludeBlockedWithinRelatedWebsiteSet.md
+npm notice 530B bundle/bundled/third_party/issue-descriptions/cookieExcludeDomainNonAscii.md
+npm notice 387B bundle/bundled/third_party/issue-descriptions/cookieExcludePortMismatch.md
+npm notice 279B bundle/bundled/third_party/issue-descriptions/cookieExcludeSchemeMismatch.md
+npm notice 388B bundle/bundled/third_party/issue-descriptions/cookieExcludeThirdPartyPhaseoutRead.md
+npm notice 387B bundle/bundled/third_party/issue-descriptions/cookieExcludeThirdPartyPhaseoutSet.md
+npm notice 544B bundle/bundled/third_party/issue-descriptions/cookieWarnDomainNonAscii.md
+npm notice 378B bundle/bundled/third_party/issue-descriptions/cookieWarnMetadataGrantRead.md
+npm notice 375B bundle/bundled/third_party/issue-descriptions/cookieWarnMetadataGrantSet.md
+npm notice 400B bundle/bundled/third_party/issue-descriptions/cookieWarnThirdPartyPhaseoutRead.md
+npm notice 400B bundle/bundled/third_party/issue-descriptions/cookieWarnThirdPartyPhaseoutSet.md
+npm notice 536B bundle/bundled/third_party/issue-descriptions/corsAllowCredentialsRequired.md
+npm notice 537B bundle/bundled/third_party/issue-descriptions/corsDisabledScheme.md
+npm notice 628B bundle/bundled/third_party/issue-descriptions/corsDisallowedByMode.md
+npm notice 518B bundle/bundled/third_party/issue-descriptions/corsHeaderDisallowedByPreflightResponse.md
+npm notice 640B bundle/bundled/third_party/issue-descriptions/corsInvalidHeaderValues.md
+npm notice 1.1kB bundle/bundled/third_party/issue-descriptions/corsLocalNetworkAccessPermissionDenied.md
+npm notice 480B bundle/bundled/third_party/issue-descriptions/corsMethodDisallowedByPreflightResponse.md
+npm notice 335B bundle/bundled/third_party/issue-descriptions/corsNoCorsRedirectModeNotFollow.md
+npm notice 645B bundle/bundled/third_party/issue-descriptions/corsOriginMismatch.md
+npm notice 394B bundle/bundled/third_party/issue-descriptions/corsPreflightResponseInvalid.md
+npm notice 377B bundle/bundled/third_party/issue-descriptions/corsRedirectContainsCredentials.md
+npm notice 914B bundle/bundled/third_party/issue-descriptions/corsWildcardOriginNotAllowed.md
+npm notice 615B bundle/bundled/third_party/issue-descriptions/cspEvalViolation.md
+npm notice 608B bundle/bundled/third_party/issue-descriptions/cspInlineViolation.md
+npm notice 616B bundle/bundled/third_party/issue-descriptions/cspTrustedTypesPolicyViolation.md
+npm notice 544B bundle/bundled/third_party/issue-descriptions/cspTrustedTypesSinkViolation.md
+npm notice 961B bundle/bundled/third_party/issue-descriptions/cspURLViolation.md
+npm notice 45B bundle/bundled/third_party/issue-descriptions/deprecation.md
+npm notice 57B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestAccountsHttpNotFound.md
+npm notice 39B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestAccountsInvalidResponse.md
+npm notice 73B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestAccountsNoResponse.md
+npm notice 37B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestApprovalDeclined.md
+npm notice 32B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestCanceled.md
+npm notice 61B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestErrorFetchingSignin.md
+npm notice 28B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestErrorIdToken.md
+npm notice 52B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestIdTokenHttpNotFound.md
+npm notice 41B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestIdTokenInvalidRequest.md
+npm notice 31B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestIdTokenInvalidResponse.md
+npm notice 65B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestIdTokenNoResponse.md
+npm notice 42B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestInvalidSigninResponse.md
+npm notice 63B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestManifestHttpNotFound.md
+npm notice 54B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestManifestInvalidResponse.md
+npm notice 88B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestManifestNoResponse.md
+npm notice 77B bundle/bundled/third_party/issue-descriptions/federatedAuthRequestTooManyRequests.md
+npm notice 64B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestInvalidAccountsResponse.md
+npm notice 77B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestInvalidConfigOrWellKnown.md
+npm notice 99B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestNoAccountSharingPermission.md
+npm notice 55B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestNoApiPermission.md
+npm notice 76B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestNoReturningUserFromFetchedAccounts.md
+npm notice 41B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestNotIframe.md
+npm notice 78B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestNotPotentiallyTrustworthy.md
+npm notice 61B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestNotSameOrigin.md
+npm notice 74B bundle/bundled/third_party/issue-descriptions/federatedAuthUserInfoRequestNotSignedInWithIdp.md
+npm notice 409B bundle/bundled/third_party/issue-descriptions/fetchingPartitionedBlobURL.md
+npm notice 336B bundle/bundled/third_party/issue-descriptions/genericFormAriaLabelledByToNonExistingIdError.md
+npm notice 219B bundle/bundled/third_party/issue-descriptions/genericFormAutocompleteAttributeEmptyError.md
+npm notice 268B bundle/bundled/third_party/issue-descriptions/genericFormDuplicateIdForInputError.md
+npm notice 383B bundle/bundled/third_party/issue-descriptions/genericFormEmptyIdAndNameAttributesForInputError.md
+npm notice 326B bundle/bundled/third_party/issue-descriptions/genericFormInputAssignedAutocompleteValueToIdOrNameAttributeError.md
+npm notice 245B bundle/bundled/third_party/issue-descriptions/genericFormInputHasWrongButWellIntendedAutocompleteValueError.md
+npm notice 361B bundle/bundled/third_party/issue-descriptions/genericFormInputWithNoLabelError.md
+npm notice 323B bundle/bundled/third_party/issue-descriptions/genericFormLabelForMatchesNonExistingIdError.md
+npm notice 306B bundle/bundled/third_party/issue-descriptions/genericFormLabelForNameError.md
+npm notice 223B bundle/bundled/third_party/issue-descriptions/genericFormLabelHasNeitherForNorNestedInputError.md
+npm notice 403B bundle/bundled/third_party/issue-descriptions/genericNavigationEntryMarkedSkippable.md
+npm notice 129B bundle/bundled/third_party/issue-descriptions/genericResponseWasBlockedByORB.md
+npm notice 839B bundle/bundled/third_party/issue-descriptions/heavyAd.md
+npm notice 775B bundle/bundled/third_party/issue-descriptions/LowTextContrast.md
+npm notice 429B bundle/bundled/third_party/issue-descriptions/mixedContent.md
+npm notice 493B bundle/bundled/third_party/issue-descriptions/navigatingPartitionedBlobURL.md
+npm notice 388B bundle/bundled/third_party/issue-descriptions/permissionElementActivationDisabled.md
+npm notice 446B bundle/bundled/third_party/issue-descriptions/permissionElementActivationDisabledWithOccluder.md
+npm notice 499B bundle/bundled/third_party/issue-descriptions/permissionElementActivationDisabledWithOccluderParent.md
+npm notice 278B bundle/bundled/third_party/issue-descriptions/permissionElementCspFrameAncestorsMissing.md
+npm notice 168B bundle/bundled/third_party/issue-descriptions/permissionElementFencedFrameDisallowed.md
+npm notice 160B bundle/bundled/third_party/issue-descriptions/permissionElementFontSizeTooLarge.md
+npm notice 158B bundle/bundled/third_party/issue-descriptions/permissionElementFontSizeTooSmall.md
+npm notice 146B bundle/bundled/third_party/issue-descriptions/permissionElementGeolocationDeprecated.md
+npm notice 184B bundle/bundled/third_party/issue-descriptions/permissionElementInsetBoxShadowUnsupported.md
+npm notice 232B bundle/bundled/third_party/issue-descriptions/permissionElementInvalidDisplayStyle.md
+npm notice 250B bundle/bundled/third_party/issue-descriptions/permissionElementInvalidSizeValue.md
+npm notice 216B bundle/bundled/third_party/issue-descriptions/permissionElementInvalidType.md
+npm notice 282B bundle/bundled/third_party/issue-descriptions/permissionElementInvalidTypeActivation.md
+npm notice 218B bundle/bundled/third_party/issue-descriptions/permissionElementLowContrast.md
+npm notice 218B bundle/bundled/third_party/issue-descriptions/permissionElementNonOpaqueColor.md
+npm notice 265B bundle/bundled/third_party/issue-descriptions/permissionElementPaddingBottomUnsupported.md
+npm notice 263B bundle/bundled/third_party/issue-descriptions/permissionElementPaddingRightUnsupported.md
+npm notice 265B bundle/bundled/third_party/issue-descriptions/permissionElementPermissionsPolicyBlocked.md
+npm notice 199B bundle/bundled/third_party/issue-descriptions/permissionElementRegistrationFailed.md
+npm notice 373B bundle/bundled/third_party/issue-descriptions/permissionElementRequestInProgress.md
+npm notice 227B bundle/bundled/third_party/issue-descriptions/permissionElementSecurityChecksFailed.md
+npm notice 294B bundle/bundled/third_party/issue-descriptions/permissionElementTypeNotSupported.md
+npm notice 396B bundle/bundled/third_party/issue-descriptions/permissionElementUntrustedEvent.md
+npm notice 179B bundle/bundled/third_party/issue-descriptions/placeholderDescriptionForInvisibleIssues.md
+npm notice 100B bundle/bundled/third_party/issue-descriptions/propertyRuleInvalidNameIssue.md
+npm notice 157B bundle/bundled/third_party/issue-descriptions/propertyRuleIssue.md
+npm notice 571B bundle/bundled/third_party/issue-descriptions/SameSiteExcludeContextDowngradeRead.md
+npm notice 572B bundle/bundled/third_party/issue-descriptions/SameSiteExcludeContextDowngradeSet.md
+npm notice 583B bundle/bundled/third_party/issue-descriptions/SameSiteExcludeNavigationContextDowngrade.md
+npm notice 556B bundle/bundled/third_party/issue-descriptions/SameSiteNoneInsecureErrorRead.md
+npm notice 611B bundle/bundled/third_party/issue-descriptions/SameSiteNoneInsecureErrorSet.md
+npm notice 592B bundle/bundled/third_party/issue-descriptions/SameSiteNoneInsecureWarnRead.md
+npm notice 647B bundle/bundled/third_party/issue-descriptions/SameSiteNoneInsecureWarnSet.md
+npm notice 699B bundle/bundled/third_party/issue-descriptions/SameSiteUnspecifiedLaxAllowUnsafeRead.md
+npm notice 758B bundle/bundled/third_party/issue-descriptions/SameSiteUnspecifiedLaxAllowUnsafeSet.md
+npm notice 610B bundle/bundled/third_party/issue-descriptions/SameSiteWarnCrossDowngradeRead.md
+npm notice 612B bundle/bundled/third_party/issue-descriptions/SameSiteWarnCrossDowngradeSet.md
+npm notice 622B bundle/bundled/third_party/issue-descriptions/SameSiteWarnStrictLaxDowngradeStrict.md
+npm notice 587B bundle/bundled/third_party/issue-descriptions/selectElementAccessibilityDisallowedOptGroupChild.md
+npm notice 605B bundle/bundled/third_party/issue-descriptions/selectElementAccessibilityDisallowedSelectChild.md
+npm notice 272B bundle/bundled/third_party/issue-descriptions/selectElementAccessibilityInteractiveContentAttributesSelectDescendant.md
+npm notice 409B bundle/bundled/third_party/issue-descriptions/selectElementAccessibilityInteractiveContentLegendChild.md
+npm notice 299B bundle/bundled/third_party/issue-descriptions/selectElementAccessibilityInteractiveContentOptionChild.md
+npm notice 470B bundle/bundled/third_party/issue-descriptions/selectElementAccessibilityNonPhrasingContentOptionChild.md
+npm notice 643B bundle/bundled/third_party/issue-descriptions/sharedArrayBuffer.md
+npm notice 101B bundle/bundled/third_party/issue-descriptions/sharedDictionaryUseErrorCrossOriginNoCorsRequest.md
+npm notice 97B bundle/bundled/third_party/issue-descriptions/sharedDictionaryUseErrorDictionaryLoadFailure.md
+npm notice 155B bundle/bundled/third_party/issue-descriptions/sharedDictionaryUseErrorMatchingDictionaryNotUsed.md
+npm notice 1
+01B bundle/bundled/third_party/issue-descriptions/sharedDictionaryUseErrorUnexpectedContentDictionaryHeader.md
+npm notice 91B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorCossOriginNoCorsRequest.md
+npm notice 49B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorDisallowedBySettings.md
+npm notice 124B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorExpiredResponse.md
+npm notice 126B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorFeatureDisabled.md
+npm notice 63B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorInsufficientResources.md
+npm notice 84B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorInvalidMatchField.md
+npm notice 81B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorInvalidStructuredHeader.md
+npm notice 93B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorInvalidTTLField.md
+npm notice 138B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNavigationRequest.md
+npm notice 76B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNoMatchField.md
+npm notice 85B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNonIntegerTTLField.md
+npm notice 88B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNonListMatchDestField.md
+npm notice 115B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNonSecureContext.md
+npm notice 82B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNonStringIdField.md
+npm notice 98B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNonStringInMatchDestList.md
+npm notice 85B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNonStringMatchField.md
+npm notice 83B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorNonTokenTypeField.md
+npm notice 49B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorRequestAborted.md
+npm notice 49B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorShuttingDown.md
+npm notice 134B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorTooLongIdField.md
+npm notice 131B bundle/bundled/third_party/issue-descriptions/sharedDictionaryWriteErrorUnsupportedType.md
+npm notice 655B bundle/bundled/third_party/issue-descriptions/sriInvalidSignatureHeader.md
+npm notice 756B bundle/bundled/third_party/issue-descriptions/sriInvalidSignatureInputHeader.md
+npm notice 465B bundle/bundled/third_party/issue-descriptions/sriMissingSignatureHeader.md
+npm notice 477B bundle/bundled/third_party/issue-descriptions/sriMissingSignatureInputHeader.md
+npm notice 420B bundle/bundled/third_party/issue-descriptions/sriSignatureHeaderValueIsIncorrectLength.md
+npm notice 643B bundle/bundled/third_party/issue-descriptions/sriSignatureHeaderValueIsNotByteSequence.md
+npm notice 678B bundle/bundled/third_party/issue-descriptions/sriSignatureHeaderValueIsParameterized.md
+npm notice 278B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderInvalidComponentName.md
+npm notice 516B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderInvalidComponentType.md
+npm notice 231B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderInvalidDerivedComponentParameter.md
+npm notice 286B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderInvalidHeaderComponentParameter.md
+npm notice 338B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderInvalidParameter.md
+npm notice 500B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderKeyIdLength.md
+npm notice 339B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderMissingLabel.md
+npm notice 380B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderMissingRequiredParameters.md
+npm notice 351B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderValueMissingComponents.md
+npm notice 429B bundle/bundled/third_party/issue-descriptions/sriSignatureInputHeaderValueNotInnerList.md
+npm notice 429B bundle/bundled/third_party/issue-descriptions/sriValidationFailedIntegrityMismatch.md
+npm notice 259B bundle/bundled/third_party/issue-descriptions/sriValidationFailedInvalidLength.md
+npm notice 295B bundle/bundled/third_party/issue-descriptions/sriValidationFailedSignatureExpired.md
+npm notice 384B bundle/bundled/third_party/issue-descriptions/sriValidationFailedSignatureMismatch.md
+npm notice 266B bundle/bundled/third_party/issue-descriptions/stylesheetLateImport.md
+npm notice 76B bundle/bundled/third_party/issue-descriptions/stylesheetRequestFailed.md
+npm notice 231B bundle/bundled/third_party/issue-descriptions/summaryElementAccessibilityInteractiveContentSummaryDescendant.md
+npm notice 606B bundle/bundled/third_party/issue-descriptions/unencodedDigestIncorrectDigestLength.md
+npm notice 692B bundle/bundled/third_party/issue-descriptions/unencodedDigestIncorrectDigestType.md
+npm notice 549B bundle/bundled/third_party/issue-descriptions/unencodedDigestMalformedDictionary.md
+npm notice 581B bundle/bundled/third_party/issue-descriptions/unencodedDigestUnknownAlgorithm.md
+npm notice 166.1kB bundle/bundled/third_party/THIRD_PARTY_NOTICES
+npm notice 13.0kB bundle/chunk-3PKALYEE.js
+npm notice 661.1kB bundle/chunk-3TQMYM2U.js
+npm notice 858B bundle/chunk-5AUYMPVF.js
+npm notice 1.2kB bundle/chunk-5PS3AYFU.js
+npm notice 123.5kB bundle/chunk-6HI7VNOG.js
+npm notice 49.2kB bundle/chunk-6PPOCTTU.js
+npm notice 3.4kB bundle/chunk-6QUTW533.js
+npm notice 2.5kB bundle/chunk-34MYV7JD.js
+npm notice 3.4kB bundle/chunk-276DKPRA.js
+npm notice 13.0kB bundle/chunk-655FQQSH.js
+npm notice 661.1kB bundle/chunk-676FRKFQ.js
+npm notice 16.5MB bundle/chunk-BPX2L2YD.js
+npm notice 2.8MB bundle/chunk-CZAVFEJW.js
+npm notice 205.7kB bundle/chunk-DAHVX5MI.js
+npm notice 3.4kB bundle/chunk-DNAOBZGF.js
+npm notice 16.5MB bundle/chunk-ECFCOASP.js
+npm notice 3.8kB bundle/chunk-F4QCMVS2.js
+npm notice 13.0kB bundle/chunk-FHR6ZGXV.js
+npm notice 19.6kB bundle/chunk-FJN5NHD2.js
+npm notice 13.0kB bundle/chunk-G73RQFI7.js
+npm notice 19.6kB bundle/chunk-GOP3AYNF.js
+npm notice 661.1kB bundle/chunk-GTHYTWI2.js
+npm notice 49.2kB bundle/chunk-HNHISJEK.js
+npm notice 3.4kB bundle/chunk-HNIADHDA.js
+npm notice 13.0kB bundle/chunk-I2CC7FIJ.js
+npm notice 16.5MB bundle/chunk-IOEZ3OQC.js
+npm notice 56.5kB bundle/chunk-IUUIT4SU.js
+npm notice 3.8kB bundle/chunk-K2EDOBIG.js
+npm notice 49.2kB bundle/chunk-L3DUKOKQ.js
+npm notice 661.1kB bundle/chunk-LKZUQLAY.js
+npm notice 49.2kB bundle/chunk-LT2I6O5Q.js
+npm notice 661.1kB bundle/chunk-NDGJZIS6.js
+npm notice 2.8MB bundle/chunk-NGNN7J7J.js
+npm notice 661.1kB bundle/chunk-OWZSTNY4.js
+npm notice 16.5MB bundle/chunk-PB42LCDA.js
+npm notice 16.5MB bundle/chunk-PX4T2FEW.js
+npm notice 49.2kB bundle/chunk-QBIWUXYN.js
+npm notice 3.4kB bundle/chunk-QIMG2QTQ.js
+npm notice 2.8MB bundle/chunk-QRAC3AYK.js
+npm notice 3.8kB bundle/chunk-QS2J66P4.js
+npm notice 2.8MB bundle/chunk-QXOE3IGL.js
+npm notice 13.0kB bundle/chunk-R7B5CKK6.js
+npm notice 3.4kB bundle/chunk-RE4MN7WE.js
+npm notice 3.4kB bundle/chunk-RGTG7G5V.js
+npm notice 49.2kB bundle/chunk-S4TCKN3U.js
+npm notice 19.5kB bundle/chunk-SN3KLHH4.js
+npm notice 3.8kB bundle/chunk-SSROEB3C.js
+npm notice 19.6kB bundle/chunk-T4V55JCW.js
+npm notice 13.0kB bundle/chunk-TCJZWHWU.js
+npm notice 40.3kB bundle/chunk-TUDYL3X4.js
+npm notice 19.6kB bundle/chunk-UPO7TQ57.js
+npm notice 661.1kB bundle/chunk-US5HQQWC.js
+npm notice 2.8MB bundle/chunk-V46FZALM.js
+npm notice 2.8MB bundle/chunk-VD7ZIILZ.js
+npm notice 2.8MB bundle/chunk-VZPZGOUU.js
+npm notice 19.6kB bundle/chunk-WHDBOPDU.js
+npm notice 16.5MB bundle/chunk-XX7XMZSU.js
+npm notice 16.5MB bundle/chunk-Y6PCCPJZ.js
+npm notice 3.8kB bundle/chunk-Y6TVXJR3.js
+npm notice 3.8kB bundle/chunk-Z4V5PHLI.js
+npm notice 49.2kB bundle/chunk-Z5PUTO5C.js
+npm notice 19.6kB bundle/chunk-Z57SINDS.js
+npm notice 3.8kB bundle/chunk-ZAWIIHSF.js
+npm notice 902B bundle/cleanup-7PEUK3BF.js
+npm notice 902B bundle/cleanup-G7LFASQK.js
+npm notice 902B bundle/cleanup-IDM6GYEY.js
+npm notice 902B bundle/cleanup-IYIZP5XQ.js
+npm notice 902B bundle/cleanup-QDZOWKJ7.js
+npm notice 902B bundle/cleanup-YRQFN4Q4.js
+npm notice 902B bundle/cleanup-ZKUKW36P.js
+npm notice 51.7kB bundle/core-UJQAB3V2.js
+npm notice 696.0kB bundle/devtools-V7NE4CQA.js
+npm notice 28.0kB bundle/devtoolsService-6G3RGTMY.js
+npm notice 28.0kB bundle/devtoolsService-44H7LDS3.js
+npm notice 28.0kB bundle/devtoolsService-GRD3HIVF.js
+npm notice 28.0kB bundle/devtoolsService-GRVS6NGR.js
+npm notice 28.0kB bundle/devtoolsService-GW2PNLB6.js
+npm notice 28.0kB bundle/devtoolsService-MWEZ2DZG.js
+npm notice 28.0kB bundle/devtoolsService-R6X5KIR5.js
+npm notice 52.3kB bundle/dist-3KGECMUZ.js
+npm notice 51.8kB bundle/dist-DQF2JPJW.js
+npm notice 52.3kB bundle/dist-EDARQGRK.js
+npm notice 52.3kB bundle/dist-EJIT65XI.js
+npm notice 52.2kB bundle/dist-L7DJNCK7.js
+npm notice 52.3kB bundle/dist-QVVIJEUD.js
+npm notice 6.5kB bundle/docs/admin/enterprise-controls.md
+npm notice 121.7kB bundle/docs/assets/connected_devtools.png
+npm notice 61.2kB bundle/docs/assets/gemini-screenshot.png
+npm notice 112.5kB bundle/docs/assets/monitoring-dashboard-logs.png
+npm notice 58.9kB bundle/docs/assets/monitoring-dashboard-metrics.png
+npm notice 55.8kB bundle/docs/assets/monitoring-dashboard-overview.png
+npm notice 389.7kB bundle/docs/assets/release_patch.png
+npm notice 157.3kB bundle/docs/assets/theme-ansi-dark.png
+npm notice 144.8kB bundle/docs/assets/theme-ansi-light.png
+npm notice 154.4kB bundle/docs/assets/theme-atom-one-dark.png
+npm notice 150.0kB bundle/docs/assets/theme-ayu-dark.png
+npm notice 140.5kB bundle/docs/assets/theme-ayu-light.png
+npm notice 265.5kB bundle/docs/assets/theme-custom.png
+npm notice 158.7kB bundle/docs/assets/theme-default-dark.png
+npm notice 147.3kB bundle/docs/assets/theme-default-light.png
+npm notice 160.3kB bundle/docs/assets/theme-dracula-dark.png
+npm notice 157.4kB bundle/docs/assets/theme-github-dark.png
+npm notice 138.4kB bundle/docs/assets/theme-github-light.png
+npm notice 137.2kB bundle/docs/assets/theme-google-light.png
+npm notice 167.3kB bundle/docs/assets/theme-holiday-dark.png
+npm notice 161.2kB bundle/docs/assets/theme-shades-of-purple-dark.png
+npm notice 149.3kB bundle/docs/assets/theme-solarized-dark.png
+npm notice 141.4kB bundle/docs/assets/theme-solarized-light.png
+npm notice 55.6kB bundle/docs/assets/theme-tokyonight-dark.png
+npm notice 123.1kB bundle/docs/assets/theme-xcode-light.png
+npm notice 61.2kB bundle/docs/changelogs/index.md
+npm notice 3.3kB bundle/docs/changelogs/latest.md
+npm notice 3.4kB bundle/docs/changelogs/preview.md
+npm notice 4.7kB bundle/docs/cli/acp-mode.md
+npm notice 7.0kB bundle/docs/cli/auto-memory.md
+npm notice 3.1kB bundle/docs/cli/checkpointing.md
+npm notice 16.6kB bundle/docs/cli/cli-reference.md
+npm notice 6.7kB bundle/docs/cli/creating-skills.md
+npm notice 12.1kB bundle/docs/cli/custom-commands.md
+npm notice 19.2kB bundle/docs/cli/enterprise.md
+npm notice 2.1kB bundle/docs/cli/gemini-ignore.md
+npm notice 3.8kB bundle/docs/cli/gemini-md.md
+npm notice 6.5kB bundle/docs/cli/generation-settings.md
+npm notice 3.6kB bundle/docs/cli/git-worktrees.md
+npm notice 1.6kB bundle/docs/cli/headless.md
+npm notice 2.7kB bundle/docs/cli/model-routing.md
+npm notice 2.9kB bundle/docs/cli/model-steering.md
+npm notice 2.7kB bundle/docs/cli/model.md
+npm notice 2.0kB bundle/docs/cli/notifications.md
+npm notice 19.6kB bundle/docs/cli/plan-mode.md
+npm notice 2.3kB bundle/docs/cli/rewind.md
+npm notice 14.1kB bundle/docs/cli/sandbox.md
+npm notice 6.4kB bundle/docs/cli/session-management.md
+npm notice 37.3kB bundle/docs/cli/settings.md
+npm notice 3.3kB bundle/docs/cli/skills-best-practices.md
+npm notice 5.7kB bundle/docs/cli/skills.md
+npm notice 4.6kB bundle/docs/cli/system-prompt.md
+npm notice 29.5kB bundle/docs/cli/telemetry.md
+npm notice 8.1kB bundle/docs/cli/themes.md
+npm notice 754B bundle/docs/cli/token-caching.md
+npm notice 6.2kB bundle/docs/cli/trusted-folders.md
+npm notice 7.1kB bundle/docs/cli/tutorials/automation.md
+npm notice 4.5kB bundle/docs/cli/tutorials/file-management.md
+npm notice 3.3kB bundle/docs/cli/tutorials/mcp-setup.md
+npm notice 4.5kB bundle/docs/cli/tutorials/memory-management.md
+npm notice 3.5kB bundle/docs/cli/tutorials/plan-mode-steering.md
+npm notice 3.7kB bundle/docs/cli/tutorials/session-management.md
+npm notice 3.6kB bundle/docs/cli/tutorials/shell-commands.md
+npm notice 5.9kB bundle/docs/cli/tutorials/skills-getting-started.md
+npm notice 3.0kB bundle/docs/cli/tutorials/task-planning.md
+npm notice 2.5kB bundle/docs/cli/tutorials/web-tools.md
+npm notice 3.0kB bundle/docs/cli/using-agent-skills.md
+npm notice 18B bundle/docs/CONTRIBUTING.md
+npm notice 3.1kB bundle/docs/core/gemma-setup.md
+npm notice 5.0kB bundle/docs/core/index.md
+npm notice 7.1kB bundle/docs/core/local-model-routing.md
+npm notice 17.0kB bundle/docs/core/remote-agents.md
+npm notice 23.6kB bundle/docs/core/subagents.md
+npm notice 2.8kB bundle/docs/examples/proxy-script.md
+npm notice 5.8kB bundle/docs/extensions/best-practices.md
+npm notice 1.8kB bundle/docs/extensions/index.md
+npm notice 12.0kB bundle/docs/extensions/reference.md
+npm notice 7.6kB bundle/docs/extensions/releasing.md
+npm notice 12.3kB bundle/docs/extensions/writing-extensions.md
+npm notice 14.9kB bundle/docs/get-started/authentication.mdx
+npm notice 4.6kB bundle/docs/get-started/gemini-3.md
+npm notice 6.3kB bundle/docs/get-started/index.md
+npm notice 5.6kB bundle/docs/get-started/installation.mdx
+npm notice 17.7kB bundle/docs/hooks/best-practices.md
+npm notice 8.3kB bundle/docs/hooks/index.md
+npm notice 13.3kB bundle/docs/hooks/reference.md
+npm notice 11.5kB bundle/docs/hooks/writing-hooks.md
+npm notice 10.8kB bundle/docs/ide-integration/ide-companion-spec.md
+npm notice 11.7kB bundle/docs/ide-integration/index.md
+npm notice 5.9kB bundle/docs/index.md
+npm notice 8.5kB bundle/docs/integration-tests.md
+npm notice 10.0kB bundle/docs/issue-and-pr-automation.md
+npm notice 4.9kB bundle/docs/local-development.md
+npm notice 3.1kB bundle/docs/mermaid/context.mmd
+npm notice 1.6kB bundle/docs/mermaid/render-path.mmd
+npm notice 2.5kB bundle/docs/npm.md
+npm notice 981B bundle/docs/redirects.json
+npm notice 24.1kB bundle/docs/reference/commands.md
+npm notice 100.1kB bundle/docs/reference/configuration.md
+npm notice 23.4kB bundle/docs/reference/keyboard-shortcuts.md
+npm notice 6.4kB bundle/docs/reference/memport.md
+npm notice 19.4kB bundle/docs/reference/policy-engine.md
+npm notice 18.4kB bundle/docs/reference/tools.md
+npm notice 5.4kB bundle/docs/release-confidence.md
+npm notice 23.2kB bundle/docs/releases.md
+npm notice 8.1kB bundle/docs/resources/faq.md
+npm notice 9.1kB bundle/docs/resources/quota-and-pricing.md
+npm notice 6.7kB bundle/docs/resources/tos-privacy.md
+npm notice 10.4kB bundle/docs/resources/troubleshooting.md
+npm notice 1.5kB bundle/docs/resources/uninstall.md
+npm notice 9.3kB bundle/docs/sidebar.json
+npm notice 1.5kB bundle/docs/tools/activate-skill.md
+npm notice 2.8kB bundle/docs/tools/ask-user.md
+npm notice 5.2kB bundle/docs/tools/file-system.md
+npm notice 1.7kB bundle/docs/tools/internal-docs.md
+npm notice 1.8kB bundle/docs/tools/mcp-resources.md
+npm notice 40.0kB bundle/docs/tools/mcp-server.md
+npm notice 1.2kB bundle/docs/tools/memory.md
+npm notice 2.6kB bundle/docs/tools/planning.md
+npm notice 7.9kB bundle/docs/tools/shell.md
+npm notice 1.2kB bundle/docs/tools/todos.md
+npm notice 2.6kB bundle/docs/tools/tracker.md
+npm notice 1.4kB bundle/docs/tools/web-fetch.md
+npm notice 1.1kB bundle/docs/tools/web-search.md
+npm notice 418B bundle/events-XB7DADIJ.js
+npm notice 114B bundle/examples/custom-commands/commands/fs/grep-code.toml
+npm notice 54B bundle/examples/custom-commands/gemini-extension.json
+npm notice 100B bundle/examples/exclude-tools/gemini-extension.json
+npm notice 52B bundle/examples/hooks/gemini-extension.json
+npm notice 216B bundle/examples/hooks/hooks/hooks.json
+npm notice 188B bundle/examples/hooks/scripts/on-start.js
+npm notice 1.4kB bundle/examples/mcp-server/example.js
+npm notice 213B bundle/examples/mcp-server/gemini-extension.json
+npm notice 255B bundle/examples/mcp-server/package.json
+npm notice 859B bundle/examples/mcp-server/README.md
+npm notice 131B bundle/examples/policies/gemini-extension.json
+npm notice 872B bundle/examples/policies/policies/policies.toml
+npm notice 1.4kB bundle/examples/policies/README.md
+npm notice 53B bundle/examples/skills/gemini-extension.json
+npm notice 215B bundle/examples/skills/skills/greeter/SKILL.md
+npm notice 535B bundle/examples/themes-example/gemini-extension.json
+npm notice 870B bundle/examples/themes-example/README.md
+npm notice 588.9kB bundle/gemini-5PDGE6WX.js
+npm notice 588.9kB bundle/gemini-7DXPB3MF.js
+npm notice 588.9kB bundle/gemini-CNJOFTKH.js
+npm notice 589.1kB bundle/gemini-F5CBYM4L.js
+npm notice 588.9kB bundle/gemini-F6CNUDJX.js
+npm notice 588.9kB bundle/gemini-INQQTUL5.js
+npm notice 588.7kB bundle/gemini-VMPJBWDC.js
+npm notice 5.4kB bundle/gemini.js
+npm notice 1.5kB bundle/getMachineId-bsd-TXG52NKR.js
+npm notice 1.6kB bundle/getMachineId-darwin-7OE4DDZ6.js
+npm notice 1.3kB bundle/getMachineId-linux-SHIFKOOX.js
+npm notice 1.1kB bundle/getMachineId-unsupported-5U5DOEYY.js
+npm notice 1.7kB bundle/getMachineId-win-6KLLGOI4.js
+npm notice 490B bundle/https-proxy-agent-AVGR4LHR.js
+npm notice 1.3MB bundle/interactiveCli-4KXVRFXA.js
+npm notice 1.3MB bundle/interactiveCli-ECZDTHHU.js
+npm notice 1.3MB bundle/interactiveCli-JVO74XKB.js
+npm notice 1.3MB bundle/interactiveCli-KWY5GKP6.js
+npm notice 1.3MB bundle/interactiveCli-N4CBIC5D.js
+npm notice 1.3MB bundle/interactiveCli-SKXKN74F.js
+npm notice 1.3MB bundle/interactiveCli-ULGSLRTG.js
+npm notice 2.1kB bundle/liteRtServerManager-7HHGAC4T.js
+npm notice 2.1kB bundle/liteRtServerManager-CNHKI6FZ.js
+npm notice 2.1kB bundle/liteRtServerManager-DBDZSTAI.js
+npm notice 2.1kB bundle/liteRtServerManager-FJY7RTRI.js
+npm notice 2.1kB bundle/liteRtServerManager-JJS5YM3B.js
+npm notice 2.1kB bundle/liteRtServerManager-T6LPMEX6.js
+npm notice 2.1kB bundle/liteRtServerManager-X6I3XMJD.js
+npm notice 11.7kB bundle/multipart-parser-KPBZEGQU.js
+npm notice 8.8kB bundle/oauth2-provider-67MTQDEE.js
+npm notice 8.8kB bundle/oauth2-provider-CTNMERJK.js
+npm notice 8.8kB bundle/oauth2-provider-E4Z4Z72E.js
+npm notice 8.8kB bundle/oauth2-provider-M3HATGBC.js
+npm notice 8.8kB bundle/oauth2-provider-RNPGC3DW.js
+npm notice 8.8kB bundle/oauth2-provider-UIEJP5XV.js
+npm notice 9.1kB bundle/oauth2-provider-VZTRQQ36.js
+npm notice 312B bundle/policies/agents.toml
+npm notice 111B bundle/policies/conseca.toml
+npm notice 366B bundle/policies/discovered.toml
+npm notice 158B bundle/policies/non-interactive.toml
+npm notice 4.7kB bundle/policies/plan.toml
+npm notice 2.2kB bundle/policies/read-only.toml
+npm notice 647B bundle/policies/sandbox-default.toml
+npm notice 2.8kB bundle/policies/write.toml
+npm notice 2.4kB bundle/policies/yolo.toml
+npm notice 890B bundle/sandbox-macos-permissive-open.sb
+npm notice 1.3kB bundle/sandbox-macos-permissive-proxied.sb
+npm notice 3.4kB bundle/sandbox-macos-restrictive-open.sb
+npm notice 3.6kB bundle/sandbox-macos-restrictive-proxied.sb
+npm notice 4.8kB bundle/sandbox-macos-strict-open.sb
+npm notice 5.0kB bundle/sandbox-macos-strict-proxied.sb
+npm notice 233.3kB bundle/src-LG4OHBW7.js
+npm notice 47.0kB bundle/src-QVCVGIUX.js
+npm notice 622B bundle/start-7EHEUYWL.js
+npm notice 622B bundle/start-7Z73NNFX.js
+npm notice 622B bundle/start-ETZ4XKA3.js
+npm notice 622B bundle/start-FZIH6SC7.js
+npm notice 622B bundle/start-LVW5DXLL.js
+npm notice 622B bundle/start-UXP5DDZJ.js
+npm notice 622B bundle/start-WUX7FNFG.js
+npm notice 1.8MB bundle/tree-sitter-bash-4A2PTPDY.js
+npm notice 274.5kB bundle/tree-sitter-KWWWGOB4.js
+npm notice 361.5kB bundle/worker/worker-entry.js
+npm notice 7.6kB package.json
+npm notice Tarball Details
+npm notice name: @google/gemini-cli
+npm notice version: 0.49.0-nightly.20260617.g4d3dcdce1
+npm notice filename: google-gemini-cli-0.49.0-nightly.20260617.g4d3dcdce1.tgz
+npm notice package size: 35.5 MB
+npm notice unpacked size: 182.4 MB
+npm notice shasum: a0f75d0de1ad8d9ce345cb260b7dc336d620ed11
+npm notice integrity: sha512-fABSBbIR/mh4d[...]xWK9gtI8CqMNQ==
+npm notice total files: 509
+npm notice
+
+changed 98 packages in 9s
+
+31 packages are looking for funding
+  run `npm fund` for details
