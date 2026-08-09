@@ -49,9 +49,10 @@ TABS = [
     ("OCR", [
         ("disable_ocr",    "Disable OCR",      "toggle", None, False),
         ("ocr_backend",    "OCR Backend",      "choice", [
+            ("chrome",    "Chrome Screen AI (Fastest)"),
             ("tesseract", "Tesseract (CPU)"),
             ("easyocr",   "EasyOCR (GPU/XPU)"),
-        ], "tesseract"),
+        ], "chrome"),
         ("ocr_lang",       "OCR Language",     "text",   None, "eng"),
         ("force_ocr",      "Force OCR",        "toggle", None, False),
         ("ocr_negative",   "OCR Negative",     "toggle", None, False),

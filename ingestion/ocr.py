@@ -50,9 +50,18 @@ def _check_tesseract():
 def _check_easyocr():
     return importlib.util.find_spec('easyocr') is not None
 
+def _check_chrome_ocr():
+    try:
+        from .locro._dll import find_screen_ai_dir
+        return find_screen_ai_dir() is not None
+    except Exception:
+        return False
+
 HAS_TESSERACT = _check_tesseract()
 HAS_EASYOCR = _check_easyocr()
+HAS_CHROME_OCR = _check_chrome_ocr()
 
+_chrome_ocr_engine = None
 _easyocr_reader = None
 _easyocr_langs = None
 _warned_messages = set()
@@ -163,6 +172,16 @@ def get_ocr_backend(ocr_options=None, emit_warnings=True):
         backend = _ocr_backend_override
     else:
         backend = cfg.get('ocr_backend')
+    if backend == 'chrome' and not HAS_CHROME_OCR:
+        if HAS_EASYOCR:
+            if emit_warnings:
+                _warn_once("WARNING: Chrome OCR not available, falling back to EasyOCR")
+            return 'easyocr'
+        if HAS_TESSERACT:
+            if emit_warnings:
+                _warn_once("WARNING: Chrome OCR not available, falling back to Tesseract")
+            return 'tesseract'
+        return None
     if backend == 'easyocr' and not HAS_EASYOCR:
         if HAS_TESSERACT:
             if emit_warnings:
@@ -172,7 +191,7 @@ def get_ocr_backend(ocr_options=None, emit_warnings=True):
     if backend == 'easyocr' and HAS_EASYOCR and not _easyocr_gpu_available() and HAS_TESSERACT:
         if emit_warnings:
             _warn_once("WARNING: EasyOCR GPU not available, falling back to Tesseract")
-        return 'tesseract'
+            return 'tesseract'
     if backend == 'tesseract' and not HAS_TESSERACT:
         if HAS_EASYOCR:
             if emit_warnings:
@@ -189,7 +208,8 @@ def ocr_backend_available(ocr_options=None) -> bool:
 def ocr_unavailable_message() -> str:
     return (
         "No OCR backend is available.\n\n"
-        "Install one of these in the active Python environment:\n"
+        "Install or enable one of these backends:\n"
+        "- Chrome: Install Google Chrome (uses local Screen AI models)\n"
         "- Tesseract: install the Tesseract system binary and run "
         "python -m pip install pytesseract\n"
         "- EasyOCR: python -m pip install easyocr\n\n"
@@ -265,7 +285,18 @@ def _ocr_single(img, ocr_options=None) -> str:
     if backend is None:
         _warn_once("WARNING: No OCR backend available (install tesseract or easyocr)")
         return ""
-    if backend == 'easyocr':
+    if backend == 'chrome':
+        global _chrome_ocr_engine
+        try:
+            if _chrome_ocr_engine is None:
+                from .locro.ocr import ScreenAI
+                _chrome_ocr_engine = ScreenAI()
+            result = _chrome_ocr_engine.ocr_pil_image(img)
+            return result.text
+        except Exception as e:
+            _warn_once(f"WARNING: Chrome OCR failed: {e}")
+            return ""
+    elif backend == 'easyocr':
         _suppress_torch_cpu_warnings()
         lang = (ocr_options.language if ocr_options is not None else None) or _ocr_lang or 'eng'
         easyocr_langs = _tess_lang_to_easyocr(lang)
